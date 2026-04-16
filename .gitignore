@@ -1,0 +1,21 @@
+# Зависимости
+node_modules/
+.pnpm-store/
+
+# Файлы сборки и логи
+dist/
+build/
+*.log
+.env
+.env.local
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+*.suo
+*.user
+
+# Временные файлы
+*.tmp
+*.temp
