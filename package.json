@@ -1,0 +1,16 @@
+{
+  "name": "logistics-platform",
+  "private": true,
+  "packageManager": "pnpm@10.27.0",
+  "scripts": {
+    "dev": "concurrently -k -n ai,backend,frontend -c magenta,cyan,green \"pnpm run dev:ai\" \"pnpm --dir backend run start:dev\" \"pnpm --dir frontend run dev\"",
+    "predev": "powershell -ExecutionPolicy Bypass -File scripts\\local-postgres.ps1 start",
+    "dev:ai": "powershell -ExecutionPolicy Bypass -File scripts\\dev-ai.ps1",
+    "dev:db": "powershell -ExecutionPolicy Bypass -File scripts\\local-postgres.ps1 start",
+    "dev:db:stop": "powershell -ExecutionPolicy Bypass -File scripts\\local-postgres.ps1 stop",
+    "dev:db:status": "powershell -ExecutionPolicy Bypass -File scripts\\local-postgres.ps1 status"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1"
+  }
+}

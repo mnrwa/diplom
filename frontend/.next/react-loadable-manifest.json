@@ -1,0 +1,8 @@
+{
+  "components\\map\\MapView.tsx -> @2gis/mapgl": {
+    "id": "components\\map\\MapView.tsx -> @2gis/mapgl",
+    "files": [
+      "static/chunks/_app-pages-browser_node_modules_pnpm_2gis_mapgl_1_71_0_node_modules_2gis_mapgl_dist_index_js.js"
+    ]
+  }
+}

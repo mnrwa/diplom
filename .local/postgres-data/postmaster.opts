@@ -1,0 +1,1 @@
+D:/postgres/bin/postgres.exe "-D" "C:/Users/vbakh/OneDrive/Desktop/logistics-platform/.local/postgres-data" "-p" "5433"

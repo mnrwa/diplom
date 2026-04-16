@@ -1,0 +1,61 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: logistics_db
+    environment:
+      POSTGRES_USER: logistics
+      POSTGRES_PASSWORD: logistics123
+      POSTGRES_DB: logistics_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U logistics -d logistics_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: logistics_backend
+    ports:
+      - "3001:3001"
+    environment:
+      DATABASE_URL: postgresql://logistics:logistics123@postgres:5432/logistics_db
+      JWT_SECRET: super_secret_jwt_key_change_in_prod
+      AI_SERVICE_URL: http://ai-service:8000
+      PORT: 3001
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  ai-service:
+    build:
+      context: ./ai-service
+      dockerfile: Dockerfile
+    container_name: logistics_ai
+    ports:
+      - "8000:8000"
+    environment:
+      OPENWEATHER_API_KEY: ${OPENWEATHER_API_KEY:-demo_key}
+      NEWS_API_KEY: ${NEWS_API_KEY:-demo_key}
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: logistics_frontend
+    ports:
+      - "3000:3000"
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:3001
+      NEXT_PUBLIC_WS_URL: ws://localhost:3001
+    depends_on:
+      - backend
+
+volumes:
+  postgres_data:
+  ai_models:

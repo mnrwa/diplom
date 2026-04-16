@@ -1,0 +1,83 @@
+[
+  {
+    "id": "route-regional-discovery",
+    "enabled": true,
+    "kind": "route_search_web",
+    "name": "Route Regional Discovery",
+    "platform": "REGIONAL_WEB",
+    "providers": [
+      "google-news-rss",
+      "brave-html"
+    ],
+    "fresh_seconds": 900,
+    "max_items_per_query": 6,
+    "public_sites": [
+      "t.me/s",
+      "vk.com",
+      "max.ru"
+    ],
+    "query_templates": [
+      "{location_context} дорожные новости",
+      "{location_context} дтп авария трасса",
+      "{location_context} ремонт дороги перекрытие пробка",
+      "{location_context} происшествия транспорт дорога"
+    ],
+    "social_query_templates": [
+      "site:{site} {location_context} дтп авария перекрытие трасса ремонт пробка"
+    ]
+  },
+  {
+    "id": "telegram-route-watch",
+    "enabled": true,
+    "kind": "local_export",
+    "name": "Telegram Route Watch",
+    "platform": "TELEGRAM",
+    "channel": "@route_watch",
+    "path": "data/chat_exports/telegram_route_watch.json",
+    "max_items": 12
+  },
+  {
+    "id": "vk-route-watch",
+    "enabled": true,
+    "kind": "local_export",
+    "name": "VK Road Public",
+    "platform": "VK",
+    "channel": "vk.com/route_watch",
+    "path": "data/chat_exports/vk_route_watch.json",
+    "max_items": 12
+  },
+  {
+    "id": "max-logistics-watch",
+    "enabled": true,
+    "kind": "local_export",
+    "name": "MAX Logistics Watch",
+    "platform": "MAX",
+    "channel": "MAX / Logistics Watch",
+    "path": "data/chat_exports/max_route_watch.json",
+    "max_items": 12
+  },
+  {
+    "id": "regional-rss-example",
+    "enabled": false,
+    "kind": "rss",
+    "name": "Regional RSS Example",
+    "platform": "WEBSITE",
+    "url": "https://example.org/rss.xml",
+    "max_items": 10
+  },
+  {
+    "id": "regional-html-example",
+    "enabled": false,
+    "kind": "html",
+    "name": "Regional HTML Example",
+    "platform": "WEBSITE",
+    "url": "https://example.org/news",
+    "item_selector": "article",
+    "title_selector": "h2",
+    "summary_selector": "p",
+    "link_selector": "a",
+    "date_selector": "time",
+    "date_attr": "datetime",
+    "max_items": 10
+  }
+]

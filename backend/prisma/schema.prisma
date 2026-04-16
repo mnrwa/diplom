@@ -1,0 +1,189 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id            Int           @id @default(autoincrement())
+  email         String        @unique
+  password      String
+  name          String
+  role          Role          @default(DISPATCHER)
+  phone         String?
+  createdAt     DateTime      @default(now())
+  routesCreated Route[]       @relation("RouteDispatcher")
+  driverProfile DriverProfile?
+}
+
+enum Role {
+  ADMIN
+  DISPATCHER
+  DRIVER
+}
+
+model DriverProfile {
+  id              Int          @id @default(autoincrement())
+  userId          Int          @unique
+  phone           String?
+  licenseNumber   String?
+  licenseCategory String       @default("C")
+  experienceYears Int          @default(3)
+  rating          Float        @default(4.7)
+  status          DriverStatus @default(ON_SHIFT)
+  shiftStartedAt  DateTime     @default(now())
+  notes           String?
+  vehicleId       Int?         @unique
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+  user            User         @relation(fields: [userId], references: [id])
+  vehicle         Vehicle?     @relation(fields: [vehicleId], references: [id])
+  routes          Route[]      @relation("RouteDriver")
+  newsItems       DriverNews[]
+}
+
+enum DriverStatus {
+  ON_SHIFT
+  RESTING
+  OFFLINE
+}
+
+model Vehicle {
+  id            Int           @id @default(autoincrement())
+  plateNumber   String        @unique
+  model         String
+  status        VehicleStatus @default(IDLE)
+  driverName    String?
+  createdAt     DateTime      @default(now())
+  routes        Route[]
+  gpsLogs       GpsLog[]
+  driverProfile DriverProfile?
+}
+
+enum VehicleStatus {
+  IDLE
+  ON_ROUTE
+  MAINTENANCE
+}
+
+model LocationPoint {
+  id        Int               @id @default(autoincrement())
+  name      String
+  code      String            @unique
+  type      LocationPointType
+  city      String
+  address   String
+  lat       Float
+  lon       Float
+  notes     String?
+  createdAt DateTime          @default(now())
+  updatedAt DateTime          @updatedAt
+  routesFrom Route[]          @relation("RouteStartPoint")
+  routesTo   Route[]          @relation("RouteEndPoint")
+  newsItems  DriverNews[]
+}
+
+enum LocationPointType {
+  WAREHOUSE
+  PICKUP_POINT
+}
+
+model Route {
+  id            Int           @id @default(autoincrement())
+  name          String
+  status        RouteStatus   @default(PLANNED)
+  startLat      Float
+  startLon      Float
+  endLat        Float
+  endLon        Float
+  waypoints     Json?
+  distance      Float?
+  estimatedTime Int?
+  riskScore     Float?
+  riskFactors   Json?
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+  vehicle       Vehicle?      @relation(fields: [vehicleId], references: [id])
+  vehicleId     Int?
+  dispatcher    User?         @relation("RouteDispatcher", fields: [dispatcherId], references: [id])
+  dispatcherId  Int?
+  driver        DriverProfile? @relation("RouteDriver", fields: [driverId], references: [id])
+  driverId      Int?
+  startPoint    LocationPoint? @relation("RouteStartPoint", fields: [startPointId], references: [id])
+  startPointId  Int?
+  endPoint      LocationPoint? @relation("RouteEndPoint", fields: [endPointId], references: [id])
+  endPointId    Int?
+  gpsLogs       GpsLog[]
+  newsItems     DriverNews[]
+}
+
+enum RouteStatus {
+  PLANNED
+  ACTIVE
+  COMPLETED
+  CANCELLED
+  RECALCULATING
+}
+
+model GpsLog {
+  id        Int      @id @default(autoincrement())
+  lat       Float
+  lon       Float
+  speed     Float?
+  timestamp DateTime @default(now())
+  vehicle   Vehicle  @relation(fields: [vehicleId], references: [id])
+  vehicleId Int
+  route     Route?   @relation(fields: [routeId], references: [id])
+  routeId   Int?
+}
+
+model RiskEvent {
+  id          Int       @id @default(autoincrement())
+  type        EventType
+  title       String
+  description String?
+  lat         Float?
+  lon         Float?
+  severity    Float
+  source      String
+  active      Boolean   @default(true)
+  createdAt   DateTime  @default(now())
+  expiresAt   DateTime?
+}
+
+enum EventType {
+  WEATHER
+  ACCIDENT
+  ROAD_WORK
+  TRAFFIC
+  OTHER
+}
+
+model DriverNews {
+  id              Int        @id @default(autoincrement())
+  driverId        Int?
+  routeId         Int?
+  locationPointId Int?
+  source          NewsSource
+  channel         String
+  title           String
+  summary         String
+  severity        Float      @default(0.35)
+  url             String?
+  city            String?
+  publishedAt     DateTime
+  createdAt       DateTime   @default(now())
+  driver          DriverProfile? @relation(fields: [driverId], references: [id])
+  route           Route?         @relation(fields: [routeId], references: [id])
+  locationPoint   LocationPoint? @relation(fields: [locationPointId], references: [id])
+}
+
+enum NewsSource {
+  TELEGRAM
+  VK
+  MAX
+  INTERNAL
+}
