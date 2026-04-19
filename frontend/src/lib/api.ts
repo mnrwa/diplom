@@ -115,17 +115,8 @@ export type RiskEvent = {
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001";
 
-export const api = axios.create({ baseURL: API_URL });
-
-api.interceptors.request.use((config) => {
-  if (typeof window !== "undefined") {
-    const token = localStorage.getItem("token");
-    if (token) {
-      config.headers.Authorization = `Bearer ${token}`;
-    }
-  }
-  return config;
-});
+// withCredentials=true — браузер автоматически отправляет httpOnly cookie с токеном
+export const api = axios.create({ baseURL: API_URL, withCredentials: true });
 
 api.interceptors.response.use(
   (response) => response,
@@ -133,8 +124,6 @@ api.interceptors.response.use(
     const status = error?.response?.status;
     const url = String(error?.config?.url ?? "");
 
-    // If token expired/invalid: clear session and send user back to login.
-    // Don't redirect on login/register requests to avoid loops.
     if (
       status === 401 &&
       typeof window !== "undefined" &&
@@ -142,7 +131,6 @@ api.interceptors.response.use(
       !url.includes("/auth/register")
     ) {
       try {
-        localStorage.removeItem("token");
         localStorage.removeItem("user");
       } catch {
         // ignore
@@ -167,11 +155,33 @@ export const login = (email: string, password: string) =>
 export const register = (email: string, password: string, name: string) =>
   api.post<AuthResponse>("/auth/register", { email, password, name }).then((r) => r.data);
 
+export const getMe = () =>
+  api.get<SessionUser>("/auth/me").then((r) => r.data);
+
+export const logoutApi = () =>
+  api.post("/auth/logout").then((r) => r.data);
+
 export const getRoutes = () =>
   api.get<RouteSummary[]>("/routes").then((r) => r.data);
 
 export const getRoute = (id: number) =>
   api.get<RouteSummary>(`/routes/${id}`).then((r) => r.data);
+
+export type PublicTrackRouteResponse = {
+  id: number;
+  name: string;
+  status: RouteSummary["status"];
+  startPoint?: LocationPoint | null;
+  endPoint?: LocationPoint | null;
+  distance?: number | null;
+  estimatedTime?: number | null;
+  gpsLogs: Array<{ lat: number; lon: number; speed?: number; timestamp: string }>;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export const publicTrackRoute = (id: number) =>
+  api.get<PublicTrackRouteResponse>(`/public/track/${id}`).then((r) => r.data);
 
 export const createRoute = (data: {
   name: string;
@@ -237,3 +247,40 @@ export const getPositions = () =>
 
 export const getRiskEvents = () =>
   api.get<RiskEvent[]>("/ai/risk-events").then((r) => r.data);
+
+export type GeocodeResult = {
+  displayName: string;
+  lat: number;
+  lon: number;
+  city: string;
+  address: string;
+  country: string;
+};
+
+export const geocodeAddress = (q: string) =>
+  api.get<GeocodeResult[]>("/locations/geocode", { params: { q } }).then((r) => r.data);
+
+export const publicGeocodeAddress = (q: string) =>
+  api.get<GeocodeResult[]>("/public/geocode", { params: { q } }).then((r) => r.data);
+
+export type QuickRouteInput = {
+  name?: string;
+  startLat: number;
+  startLon: number;
+  startName: string;
+  startCity: string;
+  startAddress: string;
+  endLat: number;
+  endLon: number;
+  endName: string;
+  endCity: string;
+  endAddress: string;
+  vehicleId?: number;
+  driverId?: number;
+};
+
+export const createQuickRoute = (data: QuickRouteInput) =>
+  api.post<RouteSummary>("/routes/quick", data).then((r) => r.data);
+
+export const publicCreateOrder = (data: QuickRouteInput) =>
+  api.post<RouteSummary>("/public/order", data).then((r) => r.data);

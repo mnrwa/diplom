@@ -56,6 +56,12 @@ export class LocationsController {
     return this.locations.findAll(type);
   }
 
+  @Get('geocode')
+  @ApiOperation({ summary: 'Геокодирование адреса через Nominatim' })
+  geocode(@Query('q') query: string) {
+    return this.locations.geocode(query || '');
+  }
+
   @Post()
   @ApiOperation({ summary: 'Добавить склад или ПВЗ' })
   create(@Body() dto: CreateLocationDto) {

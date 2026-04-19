@@ -45,15 +45,27 @@ export type RouteAlternative = {
   routeWeight: number;
 };
 
+export function serializeRouteGeometry(
+  geometry: [number, number][],
+  maxPoints = 320,
+): RouteWaypoint[] {
+  return simplifyGeometry(geometry, maxPoints).map(([lon, lat]) => ({
+    lat: Number(lat.toFixed(6)),
+    lon: Number(lon.toFixed(6)),
+  }));
+}
+
 export function geometryToWaypoints(
   geometry: [number, number][],
   maxPoints = 72,
 ): RouteWaypoint[] {
-  if (geometry.length <= 2) {
+  const simplified = simplifyGeometry(geometry, maxPoints + 2);
+
+  if (simplified.length <= 2) {
     return [];
   }
 
-  const interior = geometry.slice(1, -1);
+  const interior = simplified.slice(1, -1);
   if (interior.length <= maxPoints) {
     return interior.map(([lon, lat]) => ({ lat, lon }));
   }
@@ -135,6 +147,30 @@ export function getRouteMidpoint(
   };
 }
 
+export function pickShortestRoadAlternative(
+  alternatives: RouteAlternative[],
+): RouteAlternative | null {
+  if (!alternatives.length) {
+    return null;
+  }
+
+  return [...alternatives].sort((left, right) => {
+    if (left.distanceKm !== right.distanceKm) {
+      return left.distanceKm - right.distanceKm;
+    }
+
+    if (left.durationMin !== right.durationMin) {
+      return left.durationMin - right.durationMin;
+    }
+
+    return left.routeWeight - right.routeWeight;
+  })[0];
+}
+
+/**
+ * Базовый штраф за плохую скорость потока.
+ * Чем ниже средняя скорость — тем выше вес пробок.
+ */
 export function calculateTrafficPenalty(avgSpeedKph: number) {
   if (avgSpeedKph >= 72) return 0.08;
   if (avgSpeedKph >= 58) return 0.18;
@@ -143,6 +179,27 @@ export function calculateTrafficPenalty(avgSpeedKph: number) {
   return 0.72;
 }
 
+/**
+ * Мультипликатор пробок в зависимости от времени суток.
+ * Пиковые часы: 07-10 и 17-20 (типичная городская нагрузка РФ).
+ * Вечерний час-пик обычно хуже утреннего.
+ */
+export function getTimeOfDayTrafficMultiplier(hourUtc?: number): number {
+  const hour = hourUtc ?? new Date().getHours(); // local server hour
+  // Morning rush: 07:00-10:00
+  if (hour >= 7 && hour < 10) return 1.45;
+  // Evening rush: 17:00-20:00
+  if (hour >= 17 && hour < 20) return 1.65;
+  // Late evening / night — lighter traffic
+  if (hour >= 22 || hour < 6) return 0.70;
+  // Business hours — moderate
+  return 1.0;
+}
+
+/**
+ * Рассчитывает подверженность маршрута дорожным инцидентам.
+ * Возвращает нормализованный score [0..1] и список совпадений.
+ */
 export function calculateRouteEventExposure(
   geometry: [number, number][],
   events: RiskEventLike[],
@@ -175,11 +232,16 @@ export function calculateRouteEventExposure(
     .sort((left, right) => left.distanceKm - right.distanceKm);
 
   const exposure = matches.reduce((total, match) => {
+    // Closer incidents have much higher impact
     const distanceWeight =
-      match.distanceKm <= 6 ? 1 : match.distanceKm <= 15 ? 0.65 : 0.35;
+      match.distanceKm <= 3 ? 1.0
+      : match.distanceKm <= 8 ? 0.85
+      : match.distanceKm <= 15 ? 0.65
+      : 0.35;
+
     const typeWeight =
       match.type === 'ACCIDENT'
-        ? 1
+        ? 1.0
         : match.type === 'ROAD_WORK'
           ? 0.88
           : match.type === 'TRAFFIC'
@@ -197,6 +259,20 @@ export function calculateRouteEventExposure(
   };
 }
 
+/**
+ * Ранжирует альтернативные маршруты от OSRM.
+ * Метрика: взвешенная комбинация времени, дистанции, пробок,
+ * дорожных событий, новостного риска и времени суток.
+ *
+ * Весовые коэффициенты (сумма = 1):
+ *   duration      0.40  — основной критерий эффективности
+ *   eventExposure 0.22  — безопасность (инциденты рядом)
+ *   traffic       0.14  — пробочный штраф (время суток учтён)
+ *   distance      0.10  — дистанция (небольшой вес — короче ≠ лучше)
+ *   aiRisk        0.08  — базовый AI-риск маршрута
+ *   news          0.04  — новостные риски
+ *   weather       0.02  — погодные условия
+ */
 export function rankAlternatives(
   alternatives: Array<{
     geometry: [number, number][];
@@ -210,26 +286,32 @@ export function rankAlternatives(
     weatherRisk: number;
     newsRisk: number;
     aiRiskBase: number;
+    hourOfDay?: number;
   },
 ): RouteAlternative[] {
   const minDuration = Math.min(...alternatives.map((item) => item.durationMin));
   const minDistance = Math.min(...alternatives.map((item) => item.distanceKm));
+  const todMultiplier = getTimeOfDayTrafficMultiplier(context.hourOfDay);
 
   return alternatives
     .map((alternative, index) => {
-      const trafficPenalty = calculateTrafficPenalty(alternative.avgSpeedKph);
+      const baseTrafficPenalty = calculateTrafficPenalty(alternative.avgSpeedKph);
+      // Apply time-of-day multiplier — cap at 1.0
+      const trafficPenalty = Number(Math.min(1, baseTrafficPenalty * todMultiplier).toFixed(3));
+
       const normalizedDuration =
         minDuration > 0 ? alternative.durationMin / minDuration : 1;
       const normalizedDistance =
         minDistance > 0 ? alternative.distanceKm / minDistance : 1;
+
       const routeWeight =
-        normalizedDuration * 0.5 +
-        normalizedDistance * 0.14 +
-        alternative.eventExposure * 0.2 +
-        trafficPenalty * 0.1 +
-        context.weatherRisk * 0.03 +
-        context.newsRisk * 0.03 +
-        context.aiRiskBase * 0.12;
+        normalizedDuration * 0.40 +
+        normalizedDistance * 0.10 +
+        alternative.eventExposure * 0.22 +
+        trafficPenalty * 0.14 +
+        context.aiRiskBase * 0.08 +
+        context.newsRisk * 0.04 +
+        context.weatherRisk * 0.02;
 
       return {
         rank: index + 1,
@@ -237,11 +319,119 @@ export function rankAlternatives(
         distanceKm: alternative.distanceKm,
         durationMin: alternative.durationMin,
         avgSpeedKph: alternative.avgSpeedKph,
-        trafficPenalty: Number(trafficPenalty.toFixed(3)),
+        trafficPenalty,
         eventExposure: alternative.eventExposure,
         eventMatches: alternative.eventMatches,
         routeWeight: Number(routeWeight.toFixed(4)),
       };
     })
     .sort((left, right) => left.routeWeight - right.routeWeight);
+}
+
+function simplifyGeometry(
+  geometry: [number, number][],
+  maxPoints: number,
+): [number, number][] {
+  if (geometry.length <= maxPoints) {
+    return geometry;
+  }
+
+  let toleranceKm = 0.15;
+  let simplified = douglasPeucker(geometry, toleranceKm);
+
+  while (simplified.length > maxPoints && toleranceKm < 12) {
+    toleranceKm *= 1.6;
+    simplified = douglasPeucker(geometry, toleranceKm);
+  }
+
+  if (simplified.length <= maxPoints) {
+    return simplified;
+  }
+
+  const sampled: [number, number][] = [];
+  for (let index = 0; index < maxPoints; index += 1) {
+    const ratio = maxPoints === 1 ? 0 : index / (maxPoints - 1);
+    const sourceIndex = Math.round(ratio * (simplified.length - 1));
+    sampled.push(simplified[sourceIndex]);
+  }
+
+  return sampled;
+}
+
+function douglasPeucker(
+  geometry: [number, number][],
+  toleranceKm: number,
+): [number, number][] {
+  if (geometry.length <= 2) {
+    return geometry;
+  }
+
+  const keep = new Array<boolean>(geometry.length).fill(false);
+  keep[0] = true;
+  keep[geometry.length - 1] = true;
+
+  const stack: Array<[number, number]> = [[0, geometry.length - 1]];
+
+  while (stack.length) {
+    const [startIndex, endIndex] = stack.pop()!;
+    let maxDistance = 0;
+    let candidateIndex = -1;
+
+    for (let index = startIndex + 1; index < endIndex; index += 1) {
+      const distance = perpendicularDistanceKm(
+        geometry[index],
+        geometry[startIndex],
+        geometry[endIndex],
+      );
+
+      if (distance > maxDistance) {
+        maxDistance = distance;
+        candidateIndex = index;
+      }
+    }
+
+    if (candidateIndex !== -1 && maxDistance > toleranceKm) {
+      keep[candidateIndex] = true;
+      stack.push([startIndex, candidateIndex], [candidateIndex, endIndex]);
+    }
+  }
+
+  return geometry.filter((_, index) => keep[index]);
+}
+
+function perpendicularDistanceKm(
+  point: [number, number],
+  start: [number, number],
+  end: [number, number],
+): number {
+  const anchorLat = (point[1] + start[1] + end[1]) / 3;
+  const p = projectToKm(point, anchorLat);
+  const a = projectToKm(start, anchorLat);
+  const b = projectToKm(end, anchorLat);
+
+  const abX = b.x - a.x;
+  const abY = b.y - a.y;
+  const abLengthSquared = abX * abX + abY * abY;
+
+  if (abLengthSquared === 0) {
+    return Math.hypot(p.x - a.x, p.y - a.y);
+  }
+
+  const t = Math.max(
+    0,
+    Math.min(1, ((p.x - a.x) * abX + (p.y - a.y) * abY) / abLengthSquared),
+  );
+  const projectionX = a.x + abX * t;
+  const projectionY = a.y + abY * t;
+  return Math.hypot(p.x - projectionX, p.y - projectionY);
+}
+
+function projectToKm(point: [number, number], anchorLat: number) {
+  const latFactor = 110.574;
+  const lonFactor = 111.32 * Math.cos((anchorLat * Math.PI) / 180);
+
+  return {
+    x: point[0] * lonFactor,
+    y: point[1] * latFactor,
+  };
 }

@@ -21,6 +21,13 @@ logistics-platform/
 pnpm install
 ```
 
+Если вы запускаете команды из PowerShell и видите ошибку вида
+`PSSecurityException ... выполнение сценариев отключено`, используйте:
+
+```bash
+pnpm.cmd install
+```
+
 ### 2. Запустить весь проект
 
 ```bash
@@ -59,6 +66,8 @@ pnpm run dev
   - `POST http://localhost:8000/news-collector/refresh`
   - `GET http://localhost:8000/news-feed`
   - `POST http://localhost:8000/news-risks/route`
+- быстрый CLI-тест без запуска FastAPI:
+  - `python ai-service/scripts/route_news_cli.py --from "Иркутск" --to "Улан-Удэ"`
 - переменные route discovery:
   - `NEWS_ROUTE_DISCOVERY_FRESH_SECONDS`
   - `NEWS_ROUTE_LOCALITIES_LIMIT`

@@ -11,7 +11,6 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import maplibregl, { type LngLatLike, type Map as MapLibreMap } from "maplibre-gl";
-import "maplibre-gl/dist/maplibre-gl.css";
 import { LocateFixed, Maximize2, Minus, Plus } from "lucide-react";
 
 type MapContextValue = {

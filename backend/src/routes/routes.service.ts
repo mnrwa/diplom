@@ -2,6 +2,7 @@ import { Injectable, NotFoundException } from '@nestjs/common';
 import { HttpService } from '@nestjs/axios';
 import { firstValueFrom } from 'rxjs';
 import { PrismaService } from '../prisma/prisma.service';
+import { LocationsService } from '../locations/locations.service';
 import {
   buildRouteWaypoints,
   calculateDistanceKm,
@@ -12,7 +13,9 @@ import {
   extractSpeedSamples,
   geometryToWaypoints,
   getRouteMidpoint,
+  pickShortestRoadAlternative,
   rankAlternatives,
+  serializeRouteGeometry,
   type Coordinates,
 } from './route-optimizer';
 
@@ -25,6 +28,7 @@ export class RoutesService {
   constructor(
     private prisma: PrismaService,
     private http: HttpService,
+    private locations: LocationsService,
   ) {}
 
   async findAll() {
@@ -141,6 +145,59 @@ export class RoutesService {
     );
 
     return this.findOne(created.id);
+  }
+
+  async createQuick(
+    data: {
+      name?: string;
+      startLat: number;
+      startLon: number;
+      startName: string;
+      startCity: string;
+      startAddress: string;
+      endLat: number;
+      endLon: number;
+      endName: string;
+      endCity: string;
+      endAddress: string;
+      vehicleId?: number;
+      driverId?: number;
+    },
+    dispatcherId?: number,
+  ) {
+    const [startPoint, endPoint] = await Promise.all([
+      this.locations.findOrCreate({
+        name: data.startName,
+        type: 'WAREHOUSE',
+        city: data.startCity,
+        address: data.startAddress,
+        lat: data.startLat,
+        lon: data.startLon,
+      }),
+      this.locations.findOrCreate({
+        name: data.endName,
+        type: 'PICKUP_POINT',
+        city: data.endCity,
+        address: data.endAddress,
+        lat: data.endLat,
+        lon: data.endLon,
+      }),
+    ]);
+
+    const autoName =
+      data.name ||
+      `${data.startCity} → ${data.endCity}`;
+
+    return this.create(
+      {
+        name: autoName,
+        startPointId: startPoint.id,
+        endPointId: endPoint.id,
+        vehicleId: data.vehicleId,
+        driverId: data.driverId,
+      },
+      dispatcherId,
+    );
   }
 
   async updateStatus(id: number, status: string) {
@@ -281,6 +338,7 @@ export class RoutesService {
     endLat: number;
     endLon: number;
     waypoints?: unknown;
+    riskFactors?: unknown;
   }): [number, number][] {
     const geometry: [number, number][] = [];
 
@@ -300,6 +358,15 @@ export class RoutesService {
     };
 
     pushPoint(route.startLon, route.startLat);
+
+    const routingGeometry = (route.riskFactors as any)?.routing?.geometry;
+    if (Array.isArray(routingGeometry)) {
+      routingGeometry.forEach((point: any) => {
+        const lat = Number(point?.lat);
+        const lon = Number(point?.lon);
+        pushPoint(lon, lat);
+      });
+    }
 
     if (Array.isArray(route.waypoints)) {
       route.waypoints.forEach((waypoint: any) => {
@@ -413,10 +480,11 @@ export class RoutesService {
           weatherRisk,
           newsRisk: newsPayload.totalRisk,
           aiRiskBase,
+          hourOfDay: new Date().getHours(),
         },
       );
 
-      const bestSummary = ranked[0];
+      const bestSummary = pickShortestRoadAlternative(ranked) ?? ranked[0];
       const bestAlternative =
         rawAlternatives[bestSummary.rank - 1] ?? rawAlternatives[0];
       const roadSituationRisk = Number(
@@ -452,10 +520,12 @@ export class RoutesService {
           routing: {
             source: 'osrm',
             profile: 'driving',
+            selection_strategy: 'shortest_road_path',
             alternatives_considered: ranked.length,
             selected_rank: bestSummary.rank,
             avg_speed_kmh: bestSummary.avgSpeedKph,
             route_weight: bestSummary.routeWeight,
+            geometry: serializeRouteGeometry(bestAlternative.geometry),
             route_midpoint: getRouteMidpoint(
               bestAlternative.geometry,
               startPoint,
@@ -650,10 +720,12 @@ export class RoutesService {
         routing: {
           source: 'fallback',
           profile: 'direct-demo',
+          selection_strategy: 'fallback_direct_path',
           alternatives_considered: 1,
           selected_rank: 1,
           avg_speed_kmh: 58,
           route_weight: 1,
+          geometry: serializeRouteGeometry(geometry, 96),
           road_events: eventExposure.matches,
           alternative_scores: [
             {

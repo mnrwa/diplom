@@ -5,6 +5,10 @@ node_modules/
 # Файлы сборки и логи
 dist/
 build/
+.next/
+frontend/.next/
+.local/
+ai-service/data/*.sqlite3
 *.log
 .env
 .env.local
@@ -15,6 +19,8 @@ build/
 .idea/
 *.suo
 *.user
+
+claude.md
 
 # Временные файлы
 *.tmp

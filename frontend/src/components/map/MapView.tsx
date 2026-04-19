@@ -4,9 +4,7 @@ import { LocateFixed, Maximize2, Minus, Plus } from "lucide-react";
 import maplibregl, {
   type Map as MapLibreMap,
   type Marker as MapLibreMarker,
-  type StyleSpecification,
 } from "maplibre-gl";
-import "maplibre-gl/dist/maplibre-gl.css";
 import {
   useEffect,
   useMemo,
@@ -85,6 +83,7 @@ type FallbackRuntime = {
   kind: "fallback";
   map: MapLibreMap;
   markers: Map<string, FallbackMarkerRecord>;
+  // Track logical line ids (MapLine.id). Source/layer ids are derived from it.
   lineIds: Set<string>;
   selectionMarker: MapLibreMarker | null;
 };
@@ -93,25 +92,7 @@ type Runtime = DgisRuntime | FallbackRuntime;
 
 const DGIS_KEY = process.env.NEXT_PUBLIC_2GIS_KEY?.trim();
 
-const FALLBACK_STYLE: StyleSpecification = {
-  version: 8,
-  sources: {
-    osm: {
-      type: "raster",
-      tiles: ["https://tile.openstreetmap.org/{z}/{x}/{y}.png"],
-      tileSize: 256,
-      attribution:
-        '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
-    },
-  },
-  layers: [
-    {
-      id: "osm",
-      type: "raster",
-      source: "osm",
-    },
-  ],
-};
+const FALLBACK_STYLE = "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json";
 
 export default function MapView({
   lines = [],
@@ -131,6 +112,7 @@ export default function MapView({
   const onSelectRef = useRef(onSelect);
   const onPointClickRef = useRef(onPointClick);
   const selectableRef = useRef(selectable);
+  const fitSignatureRef = useRef<string | null>(null);
   const [ready, setReady] = useState(false);
 
   useEffect(() => {
@@ -144,6 +126,12 @@ export default function MapView({
   useEffect(() => {
     selectableRef.current = selectable;
   }, [selectable]);
+
+  useEffect(() => {
+    if (!fitToData) {
+      fitSignatureRef.current = null;
+    }
+  }, [fitToData]);
 
   const firstPoint = points[0] || null;
   const fallbackCenter = useMemo<[number, number]>(() => {
@@ -326,12 +314,14 @@ export default function MapView({
     const runtime = runtimeRef.current;
     if (!runtime || !ready) return;
 
+    if (!center) return;
+
     if (runtime.kind === "2gis") {
-      runtime.map.setCenter(fallbackCenter, { duration: 300 });
+      runtime.map.setCenter(center, { duration: 300 });
     } else {
-      runtime.map.easeTo({ center: fallbackCenter, duration: 300 });
+      runtime.map.easeTo({ center, duration: 300 });
     }
-  }, [fallbackCenter, ready]);
+  }, [center?.[0], center?.[1], ready]);
 
   useEffect(() => {
     const runtime = runtimeRef.current;
@@ -391,13 +381,22 @@ export default function MapView({
     const runtime = runtimeRef.current;
     if (!runtime || !ready || !fitToData || !boundsPayload.length) return;
 
+    // Avoid refitting on every GPS tick: refit only when the set of objects changes.
+    // (Coordinates may change frequently for driver markers.)
+    const signature = `${points.map((p) => p.id).sort().join("|")}::${lines
+      .map((l) => l.id)
+      .sort()
+      .join("|")}::${selectedCoordinates ? "sel" : "nosel"}`;
+    if (fitSignatureRef.current === signature) return;
+    fitSignatureRef.current = signature;
+
     if (runtime.kind === "2gis") {
       fitToBounds(runtime, boundsPayload);
       return;
     }
 
     return scheduleFallbackSync(runtime, () => fitToBounds(runtime, boundsPayload));
-  }, [boundsPayload, fitToData, ready]);
+  }, [boundsPayload, fitToData, lines, points, ready, selectedCoordinates]);
 
   const handleZoomIn = () => {
     const runtime = runtimeRef.current;
@@ -447,7 +446,7 @@ export default function MapView({
   };
 
   return (
-    <div className="relative overflow-hidden rounded-[28px] border border-slate-200 bg-white shadow-[0_28px_80px_rgba(148,163,184,0.18)]">
+    <div className="relative overflow-hidden rounded-[28px] border border-sand/80 bg-white/65 shadow-[0_28px_80px_rgba(148,163,184,0.18)] backdrop-blur-xl">
       <div ref={hostRef} className={className} />
 
       <div className="pointer-events-none absolute bottom-4 right-4 z-20 flex flex-col gap-2">
@@ -499,12 +498,31 @@ function initFallbackMap(
   map.on("load", markReady);
 
   map.on("click", (event) => {
+    const features = map.queryRenderedFeatures(event.point) ?? [];
+    const feature =
+      features.find((candidate) => candidate?.layer?.id && candidate?.properties) ??
+      features[0] ??
+      null;
+
+    const layerId = feature?.layer?.id;
+    const objectId =
+      feature?.id != null ? String(feature.id) : undefined;
+    const name =
+      feature?.properties && typeof feature.properties.name === "string"
+        ? feature.properties.name
+        : feature?.properties && typeof feature.properties["name:ru"] === "string"
+          ? feature.properties["name:ru"]
+          : undefined;
+    const label = name || buildObjectLabel(layerId, objectId);
+
     if (selectableRef.current) {
       onSelectRef.current?.({
-        source: "map",
+        source: feature ? "object" : "map",
         longitude: event.lngLat.lng,
         latitude: event.lngLat.lat,
-        label: "Точка на карте",
+        objectId,
+        layerId,
+        label,
       });
     }
   });
@@ -548,17 +566,14 @@ function syncDgisLines(runtime: DgisRuntime, lines: MapLine[]) {
 }
 
 function syncFallbackLines(runtime: FallbackRuntime, lines: MapLine[]) {
-  if (!runtime.map.isStyleLoaded()) {
-    return;
-  }
-
-  const nextIds = new Set<string>();
+  const nextLineIds = new Set<string>();
 
   lines.forEach((line) => {
     if (line.coordinates.length < 2) return;
 
-    const sourceId = `route-source-${line.id}`;
-    const layerId = `route-layer-${line.id}`;
+    const lineId = String(line.id);
+    const sourceId = `route-source-${lineId}`;
+    const layerId = `route-layer-${lineId}`;
     const lineFeature = {
       type: "Feature" as const,
       geometry: {
@@ -568,37 +583,55 @@ function syncFallbackLines(runtime: FallbackRuntime, lines: MapLine[]) {
       properties: {},
     };
 
-    nextIds.add(sourceId);
-    nextIds.add(layerId);
+    nextLineIds.add(lineId);
 
     const existingSource = runtime.map.getSource(sourceId) as
       | maplibregl.GeoJSONSource
       | undefined;
 
-    if (existingSource) {
+    if (existingSource?.setData) {
       existingSource.setData(lineFeature);
     } else {
-      runtime.map.addSource(sourceId, {
-        type: "geojson",
-        data: lineFeature,
-      });
+      try {
+        runtime.map.addSource(sourceId, {
+          type: "geojson",
+          data: lineFeature,
+        });
+      } catch (error) {
+        // MapLibre can throw even if the source was created in a concurrent sync.
+        // If it already exists, update its data and continue.
+        if (isAlreadyExistsError(error)) {
+          const sourceAfter = runtime.map.getSource(sourceId) as
+            | maplibregl.GeoJSONSource
+            | undefined;
+          sourceAfter?.setData?.(lineFeature);
+        } else {
+          throw error;
+        }
+      }
     }
 
     if (!runtime.map.getLayer(layerId)) {
-      runtime.map.addLayer({
-        id: layerId,
-        type: "line",
-        source: sourceId,
-        layout: {
-          "line-cap": "round",
-          "line-join": "round",
-        },
-        paint: {
-          "line-color": line.color || "#0f766e",
-          "line-width": 5,
-          "line-opacity": 0.9,
-        },
-      });
+      try {
+        runtime.map.addLayer({
+          id: layerId,
+          type: "line",
+          source: sourceId,
+          layout: {
+            "line-cap": "round",
+            "line-join": "round",
+          },
+          paint: {
+            "line-color": line.color || "#0f766e",
+            "line-width": 5,
+            "line-opacity": 0.9,
+          },
+        });
+      } catch (error) {
+        if (!isAlreadyExistsError(error)) {
+          throw error;
+        }
+      }
     } else {
       runtime.map.setPaintProperty(layerId, "line-color", line.color || "#0f766e");
       runtime.map.setPaintProperty(layerId, "line-width", 5);
@@ -606,24 +639,16 @@ function syncFallbackLines(runtime: FallbackRuntime, lines: MapLine[]) {
     }
   });
 
-  // IMPORTANT: in MapLibre we must remove layers before sources.
-  // `runtime.lineIds` is insertion-ordered and we add source ids before layer ids,
-  // so a single-pass cleanup can try to remove a source while its layer still exists.
-  runtime.lineIds.forEach((id) => {
-    if (nextIds.has(id)) return;
-    if (id.startsWith("route-layer-") && runtime.map.getLayer(id)) {
-      runtime.map.removeLayer(id);
-    }
+  // Remove lines that are no longer present.
+  runtime.lineIds.forEach((lineId) => {
+    if (nextLineIds.has(lineId)) return;
+    removeRouteLine(runtime, lineId);
   });
 
-  runtime.lineIds.forEach((id) => {
-    if (nextIds.has(id)) return;
-    if (id.startsWith("route-source-") && runtime.map.getSource(id)) {
-      runtime.map.removeSource(id);
-    }
-  });
+  // If we ever got out of sync (e.g. due to a crash), clean up any orphaned route layers/sources.
+  cleanupOrphanRouteArtifacts(runtime, nextLineIds);
 
-  runtime.lineIds = nextIds;
+  runtime.lineIds = nextLineIds;
 }
 
 function syncDgisMarkers(
@@ -833,17 +858,8 @@ function clearRuntimeObjects(runtime: Runtime) {
     return;
   }
 
-  runtime.lineIds.forEach((id) => {
-    if (id.startsWith("route-layer-") && runtime.map.getLayer(id)) {
-      runtime.map.removeLayer(id);
-    }
-  });
-
-  runtime.lineIds.forEach((id) => {
-    if (id.startsWith("route-source-") && runtime.map.getSource(id)) {
-      runtime.map.removeSource(id);
-    }
-  });
+  runtime.lineIds.forEach((lineId) => removeRouteLine(runtime, lineId));
+  cleanupOrphanRouteArtifacts(runtime, new Set());
 
   runtime.markers.clear();
   runtime.lineIds.clear();
@@ -852,6 +868,82 @@ function clearRuntimeObjects(runtime: Runtime) {
 
 function isStyleNotReadyError(error: unknown) {
   return error instanceof Error && error.message.includes("Style is not done loading");
+}
+
+function isAlreadyExistsError(error: unknown) {
+  return error instanceof Error && error.message.toLowerCase().includes("already exists");
+}
+
+function cleanupOrphanRouteArtifacts(runtime: FallbackRuntime, nextLineIds: Set<string>) {
+  let style: maplibregl.StyleSpecification | null = null;
+  try {
+    style = runtime.map.getStyle();
+  } catch {
+    return;
+  }
+
+  const layers = Array.isArray(style?.layers) ? style.layers : [];
+  const sources = style?.sources ? Object.keys(style.sources) : [];
+
+  const orphanLayerIds = layers
+    .map((layer) => layer.id)
+    .filter((id) => id.startsWith("route-layer-"))
+    .filter((id) => !nextLineIds.has(id.slice("route-layer-".length)));
+
+  orphanLayerIds.forEach((id) => {
+    try {
+      if (runtime.map.getLayer(id)) runtime.map.removeLayer(id);
+    } catch {
+      // ignore
+    }
+  });
+
+  const orphanSourceIds = sources
+    .filter((id) => id.startsWith("route-source-"))
+    .filter((id) => !nextLineIds.has(id.slice("route-source-".length)));
+
+  orphanSourceIds.forEach((id) => {
+    try {
+      if (runtime.map.getSource(id)) runtime.map.removeSource(id);
+    } catch {
+      // ignore
+    }
+  });
+}
+
+function removeRouteLine(runtime: FallbackRuntime, lineId: string) {
+  const sourceId = `route-source-${lineId}`;
+  const layerId = `route-layer-${lineId}`;
+
+  // Remove known layer first.
+  try {
+    if (runtime.map.getLayer(layerId)) runtime.map.removeLayer(layerId);
+  } catch {
+    // ignore
+  }
+
+  // Defensive: remove any additional layers still referencing this source.
+  try {
+    const style = runtime.map.getStyle();
+    const layers = Array.isArray(style?.layers) ? style.layers : [];
+    layers.forEach((layer) => {
+      if ((layer as any)?.source === sourceId && runtime.map.getLayer(layer.id)) {
+        try {
+          runtime.map.removeLayer(layer.id);
+        } catch {
+          // ignore
+        }
+      }
+    });
+  } catch {
+    // ignore
+  }
+
+  try {
+    if (runtime.map.getSource(sourceId)) runtime.map.removeSource(sourceId);
+  } catch {
+    // ignore
+  }
 }
 
 function destroyRuntime(runtime: Runtime | null) {
@@ -924,7 +1016,6 @@ function hydrateMarkerElement(
     .filter(Boolean)
     .join(" ");
   marker.setAttribute("aria-label", point.title);
-  marker.title = point.subtitle ? `${point.title} - ${point.subtitle}` : point.title;
   marker.textContent =
     point.kind === "vehicle" || point.kind === "driver" ? ">" : "o";
   marker.style.fontSize =
@@ -949,7 +1040,7 @@ function markerTone(kind: MapPoint["kind"]) {
 
 function buildObjectLabel(layerId?: string, objectId?: string) {
   if (!layerId && !objectId) return "Точка карты";
-  if (layerId?.toLowerCase().includes("building")) return "Здание 2GIS";
+  if (layerId?.toLowerCase().includes("building")) return "Здание";
   if (layerId?.toLowerCase().includes("road")) return "Дорожный объект";
   if (layerId?.toLowerCase().includes("poi")) return "POI / организация";
   if (layerId?.toLowerCase().includes("label")) return "Подпись карты";

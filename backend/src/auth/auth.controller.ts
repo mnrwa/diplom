@@ -1,7 +1,17 @@
-import { Controller, Post, Body } from '@nestjs/common';
-import { ApiTags, ApiOperation } from '@nestjs/swagger';
-import { AuthService } from './auth.service';
+import {
+  Controller,
+  Post,
+  Get,
+  Body,
+  Req,
+  Res,
+  UseGuards,
+} from '@nestjs/common';
+import { Response } from 'express';
+import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import { IsEmail, IsString, MinLength } from 'class-validator';
+import { AuthService } from './auth.service';
+import { JwtAuthGuard } from './jwt-auth.guard';
 
 export class RegisterDto {
   @IsEmail() email: string;
@@ -14,6 +24,15 @@ export class LoginDto {
   @IsString() password: string;
 }
 
+const COOKIE_OPTIONS = {
+  httpOnly: true,
+  sameSite: 'lax' as const,
+  maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+  path: '/',
+  // secure: true in production (requires HTTPS)
+  ...(process.env.NODE_ENV === 'production' ? { secure: true } : {}),
+};
+
 @ApiTags('auth')
 @Controller('auth')
 export class AuthController {
@@ -21,13 +40,39 @@ export class AuthController {
 
   @Post('register')
   @ApiOperation({ summary: 'Регистрация' })
-  register(@Body() dto: RegisterDto) {
-    return this.auth.register(dto.email, dto.password, dto.name);
+  async register(
+    @Body() dto: RegisterDto,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    const result = await this.auth.register(dto.email, dto.password, dto.name);
+    res.cookie('token', result.access_token, COOKIE_OPTIONS);
+    return result;
   }
 
   @Post('login')
   @ApiOperation({ summary: 'Вход' })
-  login(@Body() dto: LoginDto) {
-    return this.auth.login(dto.email, dto.password);
+  async login(
+    @Body() dto: LoginDto,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    const result = await this.auth.login(dto.email, dto.password);
+    res.cookie('token', result.access_token, COOKIE_OPTIONS);
+    return result;
+  }
+
+  @Get('me')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Текущий пользователь' })
+  me(@Req() req: any) {
+    // req.user is set by JwtStrategy.validate()
+    return req.user;
+  }
+
+  @Post('logout')
+  @ApiOperation({ summary: 'Выход — очистить куку' })
+  logout(@Res({ passthrough: true }) res: Response) {
+    res.clearCookie('token', { path: '/' });
+    return { ok: true };
   }
 }

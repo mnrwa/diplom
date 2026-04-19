@@ -3,11 +3,25 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import { HttpService } from '@nestjs/axios';
+import { firstValueFrom } from 'rxjs';
 import { PrismaService } from '../prisma/prisma.service';
+
+export type GeocodeResult = {
+  displayName: string;
+  lat: number;
+  lon: number;
+  city: string;
+  address: string;
+  country: string;
+};
 
 @Injectable()
 export class LocationsService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private http: HttpService,
+  ) {}
 
   findAll(type?: 'WAREHOUSE' | 'PICKUP_POINT') {
     return this.prisma.locationPoint.findMany({
@@ -64,6 +78,75 @@ export class LocationsService {
     });
 
     return this.prisma.locationPoint.delete({ where: { id } });
+  }
+
+  async geocode(query: string): Promise<GeocodeResult[]> {
+    try {
+      const response = await firstValueFrom(
+        this.http.get('https://nominatim.openstreetmap.org/search', {
+          params: {
+            q: query,
+            format: 'json',
+            limit: 6,
+            addressdetails: 1,
+            'accept-language': 'ru',
+          },
+          headers: {
+            'User-Agent': 'logistics-platform/1.0 (admin@logistics.local)',
+            'Accept-Language': 'ru',
+          },
+          timeout: 6_000,
+        }),
+      );
+
+      const items = Array.isArray(response.data) ? response.data : [];
+      return items.map((item: any) => {
+        const addr = item.address || {};
+        const city =
+          addr.city ||
+          addr.town ||
+          addr.village ||
+          addr.county ||
+          addr.state ||
+          '';
+        const road = addr.road || addr.pedestrian || addr.footway || '';
+        const houseNumber = addr.house_number || '';
+        const addressLine = [road, houseNumber].filter(Boolean).join(', ') || item.display_name?.split(',')[0] || '';
+
+        return {
+          displayName: item.display_name || '',
+          lat: parseFloat(item.lat),
+          lon: parseFloat(item.lon),
+          city,
+          address: addressLine,
+          country: addr.country || '',
+        };
+      });
+    } catch {
+      return [];
+    }
+  }
+
+  // Find or create a LocationPoint near given coordinates (100m tolerance)
+  async findOrCreate(data: {
+    name: string;
+    type: 'WAREHOUSE' | 'PICKUP_POINT';
+    city: string;
+    address: string;
+    lat: number;
+    lon: number;
+  }) {
+    const nearby = await this.prisma.locationPoint.findFirst({
+      where: {
+        lat: { gte: data.lat - 0.001, lte: data.lat + 0.001 },
+        lon: { gte: data.lon - 0.001, lte: data.lon + 0.001 },
+        type: data.type,
+      },
+    });
+
+    if (nearby) return nearby;
+
+    return this.create(data);
   }
 
   private buildCode(data: {

@@ -1,0 +1,1 @@
+self.__REACT_LOADABLE_MANIFEST='{"components/map/MapView.tsx -> @2gis/mapgl":{"id":5842,"files":["static/chunks/842.9d7171bfdf784c23.js"]}}';

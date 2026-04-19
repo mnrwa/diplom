@@ -11,7 +11,7 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
-import { IsInt, IsOptional, IsString } from 'class-validator';
+import { IsInt, IsNumber, IsOptional, IsString } from 'class-validator';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RoutesService } from './routes.service';
 
@@ -24,6 +24,50 @@ export class CreateRouteDto {
 
   @IsInt()
   endPointId: number;
+
+  @IsOptional()
+  @IsInt()
+  vehicleId?: number;
+
+  @IsOptional()
+  @IsInt()
+  driverId?: number;
+}
+
+export class CreateQuickRouteDto {
+  @IsOptional()
+  @IsString()
+  name?: string;
+
+  @IsNumber()
+  startLat: number;
+
+  @IsNumber()
+  startLon: number;
+
+  @IsString()
+  startName: string;
+
+  @IsString()
+  startCity: string;
+
+  @IsString()
+  startAddress: string;
+
+  @IsNumber()
+  endLat: number;
+
+  @IsNumber()
+  endLon: number;
+
+  @IsString()
+  endName: string;
+
+  @IsString()
+  endCity: string;
+
+  @IsString()
+  endAddress: string;
 
   @IsOptional()
   @IsInt()
@@ -60,6 +104,15 @@ export class RoutesController {
     @Req() req: { user: { id: number } },
   ) {
     return this.routes.create(dto, req.user.id);
+  }
+
+  @Post('quick')
+  @ApiOperation({ summary: 'Создать маршрут напрямую по координатам (точки создаются автоматически)' })
+  createQuick(
+    @Body() dto: CreateQuickRouteDto,
+    @Req() req: { user: { id: number } },
+  ) {
+    return this.routes.createQuick(dto, req.user.id);
   }
 
   @Patch(':id/status')

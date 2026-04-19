@@ -1,8 +1,17 @@
 {
-  "components\\map\\MapView.tsx -> @2gis/mapgl": {
-    "id": "components\\map\\MapView.tsx -> @2gis/mapgl",
+  "app\\lk\\page.tsx -> @/app/dashboard/page": {
+    "id": 1149,
     "files": [
-      "static/chunks/_app-pages-browser_node_modules_pnpm_2gis_mapgl_1_71_0_node_modules_2gis_mapgl_dist_index_js.js"
+      "static/chunks/309-b827d20c351c4bdb.js",
+      "static/chunks/611-3a04870059ece4e6.js",
+      "static/chunks/323-922474f7b17effbc.js",
+      "static/chunks/149-7e06419435614ea8.js"
+    ]
+  },
+  "components\\map\\MapView.tsx -> @2gis/mapgl": {
+    "id": 1988,
+    "files": [
+      "static/chunks/34.447071916ce32d28.js"
     ]
   }
 }

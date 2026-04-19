@@ -34,13 +34,13 @@ function Get-PostgresBin {
     }
   }
 
-  throw "Не найден PostgreSQL bin. Нужен pg_ctl.exe / initdb.exe в PATH или в D:\postgres\bin."
+  throw "PostgreSQL bin not found. Need pg_ctl.exe/initdb.exe in PATH or installed in D:\\postgres\\bin."
 }
 
-function Invoke-PgCtlStatus {
-  param([string]$pgCtlPath)
+function Test-PostgresReady {
+  param([string]$pgIsReadyPath)
 
-  & $pgCtlPath -D $dataDir status *> $null
+  & $pgIsReadyPath -h localhost -p $port | Out-Null
   return $LASTEXITCODE -eq 0
 }
 
@@ -52,13 +52,13 @@ function Ensure-Database {
 
   $exists = & $psqlPath -h localhost -p $port -U $dbUser -d postgres -tAc "SELECT 1 FROM pg_database WHERE datname = '$dbName';"
   if ($LASTEXITCODE -ne 0) {
-    throw "Не удалось проверить наличие базы данных $dbName."
+    throw "Failed to check if database '$dbName' exists."
   }
 
   if ($exists.Trim() -ne "1") {
     & $createdbPath -h localhost -p $port -U $dbUser $dbName
     if ($LASTEXITCODE -ne 0) {
-      throw "Не удалось создать базу данных $dbName."
+      throw "Failed to create database '$dbName'."
     }
   }
 }
@@ -79,21 +79,25 @@ switch ($Action) {
       New-Item -ItemType Directory -Path $dataDir -Force | Out-Null
       & $initdb -D $dataDir -U $dbUser -A trust -E UTF8
       if ($LASTEXITCODE -ne 0) {
-        throw "Не удалось инициализировать локальный PostgreSQL кластер."
+        throw "Failed to initialize local PostgreSQL cluster."
       }
     }
 
-    if (-not (Invoke-PgCtlStatus -pgCtlPath $pgCtl)) {
+    if (-not (Test-PostgresReady -pgIsReadyPath $pgIsReady)) {
       & $pgCtl -D $dataDir -l $logFile -o "-p $port" start
       if ($LASTEXITCODE -ne 0) {
-        throw "Не удалось запустить локальный PostgreSQL."
+        # pg_ctl can fail even if the server is already running or the log file is locked.
+        # Double-check readiness before failing the whole dev startup.
+        Start-Sleep -Seconds 2
+        if (-not (Test-PostgresReady -pgIsReadyPath $pgIsReady)) {
+          throw "Failed to start local PostgreSQL. Check .local\\logs\\postgres.log."
+        }
       }
       Start-Sleep -Seconds 2
     }
 
-    & $pgIsReady -h localhost -p $port | Out-Null
-    if ($LASTEXITCODE -ne 0) {
-      throw "PostgreSQL не принимает подключения на localhost:$port."
+    if (-not (Test-PostgresReady -pgIsReadyPath $pgIsReady)) {
+      throw "PostgreSQL is not accepting connections on localhost:$port."
     }
 
     Ensure-Database -psqlPath $psql -createdbPath $createdb
@@ -110,7 +114,7 @@ switch ($Action) {
   }
 
   "status" {
-    if (Invoke-PgCtlStatus -pgCtlPath $pgCtl) {
+    if (Test-PostgresReady -pgIsReadyPath $pgIsReady) {
       Write-Host "Local PostgreSQL is running."
     } else {
       Write-Host "Local PostgreSQL is stopped."

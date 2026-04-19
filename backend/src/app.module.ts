@@ -10,6 +10,7 @@ import { AiModule } from './ai/ai.module';
 import { DriversModule } from './drivers/drivers.module';
 import { LocationsModule } from './locations/locations.module';
 import { DemoDataService } from './demo/demo-data.service';
+import { PublicModule } from './public/public.module';
 
 @Module({
   imports: [
@@ -23,6 +24,7 @@ import { DemoDataService } from './demo/demo-data.service';
     AiModule,
     DriversModule,
     LocationsModule,
+    PublicModule,
   ],
   providers: [DemoDataService],
 })

@@ -1,51 +1,138 @@
 "use client";
 
-import MapView, { type MapLine, type MapPoint, type MapSelection } from "@/components/map/MapView";
+import { useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  AlertTriangle,
+  CheckCircle,
+  Loader2,
+  LogOut,
+  MapPin,
+  Package,
+  Plus,
+  Route as RouteIcon,
+  Users,
+  Warehouse,
+  Wifi,
+  WifiOff,
+} from "lucide-react";
+
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Progress } from "@/components/ui/progress";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Separator } from "@/components/ui/separator";
+import {
+  Tabs,
+  TabsContent,
+  TabsList,
+  TabsTrigger,
+} from "@/components/ui/tabs";
+import { Textarea } from "@/components/ui/textarea";
+import { DriverSelector } from "@/components/maps/DriverSelector";
+import MapView from "@/components/map/MapView";
+import { useWebSocket } from "@/hooks/useWebSocket";
 import {
   createDriverAccount,
   createLocation,
   createRoute,
+  geocodeAddress,
   getDrivers,
   getLocations,
-  getPositions,
   getRiskEvents,
   getRoutes,
   getVehicles,
+  type GeocodeResult,
   type LocationPoint,
-  type RouteSummary,
 } from "@/lib/api";
-import { clearSession, getStoredToken, getStoredUser } from "@/lib/session";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import {
-  AlertTriangle,
-  ArrowRight,
-  LogOut,
-  Plus,
-  Route,
-  Truck,
-  UserRound,
-  Warehouse,
-} from "lucide-react";
-import Link from "next/link";
-import { useRouter } from "next/navigation";
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { clearSession, getStoredUser } from "@/lib/session";
 
-type Tab = "overview" | "drivers" | "locations" | "routes" | "map";
+function generateLocationCode(type: "WAREHOUSE" | "PICKUP_POINT") {
+  const prefix = type === "WAREHOUSE" ? "WH" : "PP";
+  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  const suffix = Array.from({ length: 4 }, () =>
+    chars[Math.floor(Math.random() * chars.length)]
+  ).join("");
+  return `${prefix}-${suffix}`;
+}
 
-const tabs: Array<{ id: Tab; label: string }> = [
-  { id: "overview", label: "Обзор" },
-  { id: "drivers", label: "Водители" },
-  { id: "locations", label: "Склады и ПВЗ" },
-  { id: "routes", label: "Маршруты" },
-  { id: "map", label: "Карта" },
-];
+function statusLabel(status?: string) {
+  switch (status) {
+    case "PLANNED":
+      return "Запланирован";
+    case "ACTIVE":
+      return "В пути";
+    case "COMPLETED":
+      return "Доставлено";
+    case "CANCELLED":
+      return "Отменён";
+    case "RECALCULATING":
+      return "Пересчёт";
+    case "ON_SHIFT":
+      return "На смене";
+    case "RESTING":
+      return "Отдыхает";
+    case "OFFLINE":
+      return "Офлайн";
+    case "IDLE":
+      return "Свободно";
+    case "ON_ROUTE":
+      return "В рейсе";
+    case "MAINTENANCE":
+      return "ТО";
+    default:
+      return status ?? "—";
+  }
+}
+
+function statusTone(
+  status?: string
+): "default" | "secondary" | "success" | "destructive" | "outline" {
+  switch (status) {
+    case "ACTIVE":
+    case "ON_ROUTE":
+    case "ON_SHIFT":
+      return "default";
+    case "COMPLETED":
+      return "success";
+    case "CANCELLED":
+      return "destructive";
+    case "PLANNED":
+    case "RESTING":
+      return "secondary";
+    case "IDLE":
+      return "success";
+    default:
+      return "outline";
+  }
+}
 
 export default function DashboardPage() {
   const router = useRouter();
   const queryClient = useQueryClient();
+
   const [ready, setReady] = useState(false);
   const [userName, setUserName] = useState("Диспетчер");
-  const [tab, setTab] = useState<Tab>("overview");
+  const [selectedDriver, setSelectedDriver] = useState<string | null>(null);
+
+  // Driver form
   const [driverMessage, setDriverMessage] = useState("");
   const [driverForm, setDriverForm] = useState({
     name: "",
@@ -54,18 +141,57 @@ export default function DashboardPage() {
     phone: "",
     vehicleId: "",
   });
+
+  // Location form
   const [locationForm, setLocationForm] = useState({
     name: "",
-    code: "",
+    code: generateLocationCode("WAREHOUSE"),
     type: "WAREHOUSE" as "WAREHOUSE" | "PICKUP_POINT",
     city: "",
     address: "",
     notes: "",
+    lat: "",
+    lon: "",
   });
-  const [locationCoordinates, setLocationCoordinates] = useState<[number, number] | null>(null);
-  const [locationSelectionLabel, setLocationSelectionLabel] = useState(
-    "Точка на карте пока не выбрана",
-  );
+
+  const [locationPick, setLocationPick] = useState<[number, number] | null>(null);
+
+  // Address autocomplete
+  const [addrQuery, setAddrQuery] = useState("");
+  const [addrSuggestions, setAddrSuggestions] = useState<GeocodeResult[]>([]);
+  const [addrLoading, setAddrLoading] = useState(false);
+  const [showAddrDropdown, setShowAddrDropdown] = useState(false);
+  const addrDebounce = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const handleAddrSearch = (value: string) => {
+    setAddrQuery(value);
+    if (addrDebounce.current) clearTimeout(addrDebounce.current);
+    if (value.length < 2) { setAddrSuggestions([]); setShowAddrDropdown(false); return; }
+    addrDebounce.current = setTimeout(async () => {
+      setAddrLoading(true);
+      try {
+        const res = await geocodeAddress(value);
+        setAddrSuggestions(res.slice(0, 6));
+        setShowAddrDropdown(true);
+      } catch { setAddrSuggestions([]); }
+      finally { setAddrLoading(false); }
+    }, 350);
+  };
+
+  const handleAddrSelect = (r: GeocodeResult) => {
+    setAddrQuery(r.city || r.displayName);
+    setLocationForm((f) => ({
+      ...f,
+      city: r.city || f.city,
+      address: r.address || f.address,
+      lat: r.lat.toFixed(6),
+      lon: r.lon.toFixed(6),
+    }));
+    setLocationPick([r.lon, r.lat]);
+    setShowAddrDropdown(false);
+  };
+
+  // Route form (warehouse -> PVZ)
   const [routeForm, setRouteForm] = useState({
     name: "",
     startPointId: "",
@@ -73,59 +199,46 @@ export default function DashboardPage() {
     driverId: "",
     vehicleId: "",
   });
+  const [routeSuccess, setRouteSuccess] = useState("");
 
   useEffect(() => {
-    const token = getStoredToken();
     const user = getStoredUser();
-
-    if (!token || !user) {
+    if (!user) {
       router.replace("/login");
       return;
     }
-
     if (user.role === "DRIVER") {
-      router.replace("/driver");
+      router.replace("/lk");
       return;
     }
-
     setUserName(user.name || user.email);
     setReady(true);
   }, [router]);
+
+  const { positions: wsPositions, connected: wsConnected } = useWebSocket();
 
   const { data: drivers = [] } = useQuery({
     queryKey: ["drivers"],
     queryFn: getDrivers,
     enabled: ready,
-    refetchInterval: 10_000,
-    refetchIntervalInBackground: true,
+    refetchInterval: 15_000,
   });
-
   const { data: routes = [] } = useQuery({
     queryKey: ["routes"],
     queryFn: getRoutes,
     enabled: ready,
+    refetchInterval: 15_000,
   });
-
   const { data: vehicles = [] } = useQuery({
     queryKey: ["vehicles"],
     queryFn: getVehicles,
     enabled: ready,
   });
-
   const { data: locations = [] } = useQuery({
     queryKey: ["locations"],
     queryFn: () => getLocations(),
     enabled: ready,
   });
-
-  const { data: positions = [] } = useQuery({
-    queryKey: ["positions"],
-    queryFn: getPositions,
-    enabled: ready,
-    refetchInterval: 10_000,
-    refetchIntervalInBackground: true,
-  });
-
   const { data: riskEvents = [] } = useQuery({
     queryKey: ["risk-events"],
     queryFn: getRiskEvents,
@@ -139,17 +252,11 @@ export default function DashboardPage() {
         ...driverForm,
         vehicleId: driverForm.vehicleId ? Number(driverForm.vehicleId) : undefined,
       }),
-    onSuccess: (payload: any) => {
+    onSuccess: (payload: { credentials: { email: string; password: string } }) => {
       setDriverMessage(
-        `Доступ выдан: ${payload.credentials.email} / ${payload.credentials.password}`,
+        `Доступ выдан: ${payload.credentials.email} / ${payload.credentials.password}`
       );
-      setDriverForm({
-        name: "",
-        email: "",
-        password: "Driver123!",
-        phone: "",
-        vehicleId: "",
-      });
+      setDriverForm({ name: "", email: "", password: "Driver123!", phone: "", vehicleId: "" });
       queryClient.invalidateQueries({ queryKey: ["drivers"] });
       queryClient.invalidateQueries({ queryKey: ["vehicles"] });
     },
@@ -159,36 +266,56 @@ export default function DashboardPage() {
     mutationFn: () =>
       createLocation({
         ...locationForm,
-        lat: Number(locationCoordinates?.[1]),
-        lon: Number(locationCoordinates?.[0]),
         code: locationForm.code || undefined,
         notes: locationForm.notes || undefined,
+        lat: Number(locationForm.lat),
+        lon: Number(locationForm.lon),
       }),
     onSuccess: () => {
       setLocationForm({
         name: "",
-        code: "",
+        code: generateLocationCode("WAREHOUSE"),
         type: "WAREHOUSE",
         city: "",
         address: "",
         notes: "",
+        lat: "",
+        lon: "",
       });
-      setLocationCoordinates(null);
-      setLocationSelectionLabel("Точка на карте пока не выбрана");
+      setLocationPick(null);
+      setAddrQuery("");
+      setAddrSuggestions([]);
       queryClient.invalidateQueries({ queryKey: ["locations"] });
     },
   });
 
   const createRouteMutation = useMutation({
-    mutationFn: () =>
-      createRoute({
-        name: routeForm.name,
+    mutationFn: () => {
+      if (!routeForm.startPointId || !routeForm.endPointId) {
+        throw new Error("Выберите склад и ПВЗ");
+      }
+
+      const start = locations.find(
+        (item) => item.id === Number(routeForm.startPointId),
+      );
+      const end = locations.find(
+        (item) => item.id === Number(routeForm.endPointId),
+      );
+
+      const name =
+        routeForm.name ||
+        `${start?.city || "Точка"} → ${end?.city || "Точка"}`;
+
+      return createRoute({
+        name,
         startPointId: Number(routeForm.startPointId),
         endPointId: Number(routeForm.endPointId),
         driverId: routeForm.driverId ? Number(routeForm.driverId) : undefined,
         vehicleId: routeForm.vehicleId ? Number(routeForm.vehicleId) : undefined,
-      }),
-    onSuccess: () => {
+      });
+    },
+    onSuccess: (route) => {
+      setRouteSuccess(`Маршрут «${route.name}» создан (ID ${route.id})`);
       setRouteForm({
         name: "",
         startPointId: "",
@@ -197,126 +324,38 @@ export default function DashboardPage() {
         vehicleId: "",
       });
       queryClient.invalidateQueries({ queryKey: ["routes"] });
-      queryClient.invalidateQueries({ queryKey: ["positions"] });
       queryClient.invalidateQueries({ queryKey: ["drivers"] });
     },
   });
 
+  const activeRoutes = useMemo(
+    () => routes.filter((r) => r.status === "ACTIVE" || r.status === "PLANNED"),
+    [routes]
+  );
+  const deliveredToday = useMemo(
+    () => routes.filter((r) => r.status === "COMPLETED").length,
+    [routes]
+  );
+  const availableDrivers = useMemo(
+    () => drivers.filter((d) => d.status === "ON_SHIFT" && !d.activeRoute).length,
+    [drivers]
+  );
   const warehouses = locations.filter((item) => item.type === "WAREHOUSE");
   const pickupPoints = locations.filter((item) => item.type === "PICKUP_POINT");
-  const selectedStartPoint =
-    locations.find((item) => String(item.id) === routeForm.startPointId) || null;
-  const selectedEndPoint =
-    locations.find((item) => String(item.id) === routeForm.endPointId) || null;
 
-  const routeLines = useMemo<MapLine[]>(
-    () =>
-      routes
-        .map((route) => {
-          const coordinates = buildRouteCoordinates(route);
-          if (coordinates.length < 2) return null;
-          return {
-            id: `route-${route.id}`,
-            name: route.name,
-            color: routeColor(route.riskScore),
-            coordinates,
-          };
-        })
-        .filter(Boolean) as MapLine[],
-    [routes],
-  );
-
-  const locationMapPoints = useMemo<MapPoint[]>(
-    () =>
-      locations.map((item) => ({
-        id: `location-${item.id}`,
-        entityId: item.id,
-        kind: item.type === "WAREHOUSE" ? ("warehouse" as const) : ("pickup" as const),
-        title: item.name,
-        subtitle: `${item.city}, ${item.address}`,
-        longitude: item.lon,
-        latitude: item.lat,
-      })),
-    [locations],
-  );
-
-  const mapPoints = useMemo<MapPoint[]>(() => {
-    const vehiclePoints = positions
-      .filter((item: any) => item?.position)
-      .map((item: any) => ({
-        id: `vehicle-${item.vehicleId}`,
-        kind: "vehicle" as const,
-        title: item.driverName || item.plateNumber,
-        subtitle: item.route?.name || item.plateNumber,
-        longitude: item.position.lon,
-        latitude: item.position.lat,
-        speed: item.position.speed,
-      }));
-
-    return [...locationMapPoints, ...vehiclePoints];
-  }, [locationMapPoints, positions]);
-
-  const routeDraftLines = useMemo<MapLine[]>(
-    () =>
-      selectedStartPoint && selectedEndPoint
-        ? [
-            {
-              id: "draft-route",
-              name: "Черновик маршрута",
-              color: "#0f766e",
-              coordinates: [
-                [selectedStartPoint.lon, selectedStartPoint.lat],
-                [selectedEndPoint.lon, selectedEndPoint.lat],
-              ],
-            },
-          ]
-        : [],
-    [selectedEndPoint, selectedStartPoint],
-  );
-
-  const highlightedRoutePointIds = useMemo(
-    () =>
-      [routeForm.startPointId, routeForm.endPointId]
-        .filter(Boolean)
-        .map((value) => `location-${value}`),
-    [routeForm.endPointId, routeForm.startPointId],
-  );
-
-  const handleLocationPick = (selection: MapSelection) => {
-    setLocationCoordinates([selection.longitude, selection.latitude]);
-    setLocationSelectionLabel(
-      selection.source === "object"
-        ? selection.label || "Выбран объект карты 2GIS"
-        : selection.source === "point"
-          ? selection.pointTitle || selection.label || "Выбрана существующая точка"
-          : selection.label || "Выбрана новая точка на карте",
-    );
-  };
-
-  const handleRoutePointClick = (point: MapPoint) => {
-    if (!point.entityId) return;
-
-    if (point.kind === "warehouse") {
-      setRouteForm((current) => ({
-        ...current,
-        startPointId: String(point.entityId),
-        name:
-          current.name ||
-          (selectedEndPoint ? `Маршрут ${point.title} → ${selectedEndPoint.name}` : current.name),
-      }));
-      return;
-    }
-
-    if (point.kind === "pickup") {
-      setRouteForm((current) => ({
-        ...current,
-        endPointId: String(point.entityId),
-        name:
-          current.name ||
-          (selectedStartPoint ? `Маршрут ${selectedStartPoint.name} → ${point.title}` : current.name),
-      }));
-    }
-  };
+  const driverSelectorData = drivers.map((d) => ({
+    id: String(d.id),
+    name: d.name,
+    vehicle: d.vehicle?.plateNumber || "Без ТС",
+    status: statusLabel(d.status),
+  }));
+  const selectedDriverRoute = useMemo(() => {
+    if (!selectedDriver) return null;
+    const driver = drivers.find((d) => String(d.id) === selectedDriver);
+    if (!driver) return null;
+    const route = routes.find((r) => r.driver?.id === driver.id);
+    return route || null;
+  }, [selectedDriver, drivers, routes]);
 
   const logout = () => {
     clearSession();
@@ -325,682 +364,1039 @@ export default function DashboardPage() {
 
   if (!ready) {
     return (
-      <main className="mx-auto flex min-h-screen max-w-7xl items-center px-4 py-8 md:px-6">
-        <div className="w-full rounded-[36px] border border-white/70 bg-white/90 p-10 text-slate-600 shadow-[0_30px_90px_rgba(148,163,184,0.18)]">
-          Подготавливаем административный контур...
-        </div>
+      <main className="mx-auto flex min-h-screen max-w-7xl items-center justify-center px-4 py-8">
+        <Card className="p-10 text-gray-600">Загрузка кабинета диспетчера...</Card>
       </main>
     );
   }
 
   return (
-    <main className="mx-auto w-full max-w-7xl px-4 py-5 md:px-6">
-      <section className="rounded-[36px] border border-white/70 bg-white/92 px-6 py-6 shadow-[0_30px_90px_rgba(148,163,184,0.18)] md:px-8">
-        <div className="flex flex-col gap-5 xl:flex-row xl:items-center xl:justify-between">
-          <div>
-            <p className="text-xs uppercase tracking-[0.32em] text-slate-400">
-              Административный контур
-            </p>
-            <h1 className="mt-3 font-[Georgia] text-3xl text-slate-900 md:text-4xl">
-              {userName}, управление логистической сетью
-            </h1>
-            <p className="mt-4 max-w-3xl text-base leading-8 text-slate-600">
-              Здесь можно выдавать логины водителям, добавлять склады и ПВЗ кликом
-              по карте, собирать маршруты через дорожную сеть и отслеживать моковые
-              GPS-координаты в реальном времени.
-            </p>
+    <div className="min-h-screen pb-8">
+      <div className="border-b border-sand/80 bg-white/65 py-6 text-plum backdrop-blur-xl">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex flex-wrap items-center justify-between gap-4">
+          <div className="flex items-center gap-3">
+            <div className="rounded-2xl bg-sand p-3 text-pinterest shadow-[0_20px_40px_rgba(16,60,37,0.10)]">
+              <Users className="h-8 w-8" />
+            </div>
+            <div>
+              <h1 className="text-2xl font-bold">Диспетчерская</h1>
+              <p className="text-warmsilver text-sm">{userName}</p>
+            </div>
           </div>
-
-          <div className="flex flex-wrap gap-3">
-            <button
-              type="button"
-              onClick={() => setTab("routes")}
-              className="inline-flex items-center gap-2 rounded-full bg-slate-900 px-5 py-3 text-sm font-semibold text-white"
-            >
-              <Plus className="h-4 w-4" />
-              Новый маршрут
-            </button>
-            <button
-              type="button"
-              onClick={logout}
-              className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-5 py-3 text-sm font-medium text-slate-700"
-            >
+          <div className="flex items-center gap-2">
+            <Badge className="gap-1 border border-sand/80 bg-white/70 text-olive hover:bg-white">
+              {wsConnected ? (
+                <>
+                  <Wifi className="h-3 w-3" />
+                  GPS live
+                </>
+              ) : (
+                <>
+                  <WifiOff className="h-3 w-3" />
+                  GPS offline
+                </>
+              )}
+            </Badge>
+            <Button variant="secondary" size="sm" onClick={logout} className="gap-2">
               <LogOut className="h-4 w-4" />
               Выйти
-            </button>
+            </Button>
           </div>
         </div>
-      </section>
+      </div>
 
-      {riskEvents.length ? (
-        <section className="mt-4 rounded-[28px] border border-amber-200 bg-amber-50/90 px-5 py-4 text-sm text-amber-800 shadow-[0_24px_60px_rgba(245,158,11,0.12)]">
-          <div className="flex items-start gap-3">
-            <AlertTriangle className="mt-0.5 h-4 w-4 flex-none" />
-            <div>
-              <strong className="block text-slate-900">{riskEvents[0].title}</strong>
-              <span>{riskEvents[0].description}</span>
-            </div>
-          </div>
-        </section>
-      ) : null}
-
-      <section className="mt-4 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-        <MetricCard icon={<UserRound className="h-5 w-5" />} label="Водителей" value={drivers.length} />
-        <MetricCard icon={<Warehouse className="h-5 w-5" />} label="Точек сети" value={locations.length} />
-        <MetricCard icon={<Route className="h-5 w-5" />} label="Маршрутов" value={routes.length} />
-        <MetricCard
-          icon={<Truck className="h-5 w-5" />}
-          label="ТС в пути"
-          value={vehicles.filter((item) => item.status === "ON_ROUTE").length}
-        />
-      </section>
-
-      <section className="mt-4 flex flex-wrap gap-2 rounded-[30px] border border-white/70 bg-white/90 p-2 shadow-[0_30px_90px_rgba(148,163,184,0.16)]">
-        {tabs.map((item) => (
-          <button
-            key={item.id}
-            type="button"
-            onClick={() => setTab(item.id)}
-            className={
-              item.id === tab
-                ? "rounded-full bg-slate-900 px-4 py-3 text-sm font-semibold text-white"
-                : "rounded-full px-4 py-3 text-sm text-slate-500"
-            }
-          >
-            {item.label}
-          </button>
-        ))}
-      </section>
-
-      {tab === "overview" ? (
-        <section className="mt-4 grid gap-4 xl:grid-cols-[1.08fr_0.92fr]">
-          <Panel title="Живая карта" kicker="2GIS / OSM">
-            <div className="flex items-center justify-between gap-3">
-              <div>
-                <h2 className="font-[Georgia] text-2xl text-slate-900">
-                  Координаты транспорта, маршруты и точки сети
-                </h2>
-                <p className="mt-3 text-sm leading-7 text-slate-600">
-                  При наличии `NEXT_PUBLIC_2GIS_KEY` карта работает на русском и
-                  позволяет кликать по зданиям, POI и дорожным объектам.
-                </p>
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 -mt-3">
+        {riskEvents.length > 0 && (
+          <Card className="mb-4 border-amber-200 bg-amber-50">
+            <CardContent className="pt-4">
+              <div className="flex items-start gap-3">
+                <AlertTriangle className="h-5 w-5 text-amber-600 mt-0.5" />
+                <div>
+                  <p className="font-semibold text-amber-900">{riskEvents[0].title}</p>
+                  <p className="text-sm text-amber-800">{riskEvents[0].description}</p>
+                </div>
               </div>
-              <button
-                type="button"
-                onClick={() => setTab("map")}
-                className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-4 py-2 text-sm text-slate-700"
-              >
-                На карту
-                <ArrowRight className="h-4 w-4" />
-              </button>
-            </div>
+            </CardContent>
+          </Card>
+        )}
 
-            <div className="mt-6">
-              <MapView
-                lines={routeLines}
-                points={mapPoints}
-                className="h-[520px] w-full rounded-[28px]"
-              />
-            </div>
-          </Panel>
-
-          <div className="grid gap-4">
-            <Panel title="Водители в рейсе" kicker="Кадры">
-              <div className="space-y-3">
-                {drivers.slice(0, 4).map((driver) => (
-                  <Link
-                    key={driver.id}
-                    href={`/dashboard/drivers/${driver.id}`}
-                    className="block rounded-[24px] border border-slate-200/80 bg-slate-50/80 p-4 transition hover:border-slate-300"
-                  >
-                    <div className="flex items-center justify-between gap-3">
-                      <div>
-                        <strong className="block text-slate-900">{driver.name}</strong>
-                        <span className="text-sm text-slate-500">
-                          {driver.vehicle?.plateNumber || "Транспорт не назначен"}
-                        </span>
-                      </div>
-                      <span className="rounded-full bg-white px-3 py-1 text-xs text-slate-500">
-                        {driver.status}
-                      </span>
-                    </div>
-                  </Link>
-                ))}
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+          <Card>
+            <CardContent className="pt-6">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-xs text-gray-600">Водителей</p>
+                  <p className="text-2xl font-bold">{drivers.length}</p>
+                  <p className="text-xs text-emerald-600">
+                    {availableDrivers} свободно
+                  </p>
+                </div>
+                <Users className="h-7 w-7 text-blue-500" />
               </div>
-            </Panel>
+            </CardContent>
+          </Card>
 
-            <Panel title="Активные маршруты" kicker="Маршруты">
-              <div className="space-y-3">
-                {routes.slice(0, 4).map((route) => {
-                  const routeMeta = getRouteRoutingMeta(route);
-
-                  return (
-                    <div key={route.id} className="rounded-[24px] border border-slate-200/80 bg-slate-50/80 p-4">
-                      <strong className="block text-slate-900">{route.name}</strong>
-                      <span className="mt-1 block text-sm text-slate-500">
-                        {route.startPoint?.name || "Старт"} → {route.endPoint?.name || "Финиш"}
-                      </span>
-                      <div className="mt-3 flex items-center gap-2 text-xs text-slate-500">
-                        <span className="rounded-full bg-white px-3 py-1">{route.status}</span>
-                        <span className="rounded-full bg-white px-3 py-1">
-                          Risk {Math.round((route.riskScore || 0) * 100)}%
-                        </span>
-                      </div>
-                      {routeMeta ? (
-                        <div className="mt-3 grid gap-1 text-xs text-slate-500">
-                          <span>
-                            Дорожная сеть: {routeMeta.sourceLabel} · средняя скорость{" "}
-                            {routeMeta.avgSpeedKmh ?? "—"} км/ч
-                          </span>
-                          <span>
-                            События по дороге: {routeMeta.eventCount} · альтернативы{" "}
-                            {routeMeta.alternatives}
-                          </span>
-                        </div>
-                      ) : null}
-                    </div>
-                  );
-                })}
+          <Card>
+            <CardContent className="pt-6">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-xs text-gray-600">Активных рейсов</p>
+                  <p className="text-2xl font-bold">{activeRoutes.length}</p>
+                </div>
+                <RouteIcon className="h-7 w-7 text-emerald-500" />
               </div>
-            </Panel>
-          </div>
-        </section>
-      ) : null}
+            </CardContent>
+          </Card>
 
-      {tab === "drivers" ? (
-        <section className="mt-4 grid gap-4 xl:grid-cols-[0.92fr_1.08fr]">
-          <Panel title="Выдать логин и пароль" kicker="Доступ">
-            <div className="space-y-4">
-              <Input label="Имя водителя" value={driverForm.name} onChange={(value) => setDriverForm((current) => ({ ...current, name: value }))} />
-              <Input label="Email" value={driverForm.email} onChange={(value) => setDriverForm((current) => ({ ...current, email: value }))} />
-              <Input label="Телефон" value={driverForm.phone} onChange={(value) => setDriverForm((current) => ({ ...current, phone: value }))} />
-              <Input label="Пароль" value={driverForm.password} onChange={(value) => setDriverForm((current) => ({ ...current, password: value }))} />
-              <SelectField
-                label="Транспорт"
-                value={driverForm.vehicleId}
-                onChange={(value) => setDriverForm((current) => ({ ...current, vehicleId: value }))}
-                options={[
-                  { value: "", label: "Назначить позже" },
-                  ...vehicles.map((vehicle) => ({
-                    value: String(vehicle.id),
-                    label: `${vehicle.plateNumber} · ${vehicle.model}`,
-                  })),
-                ]}
-              />
-            </div>
-
-            {driverMessage ? (
-              <div className="mt-4 rounded-[24px] border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
-                {driverMessage}
+          <Card>
+            <CardContent className="pt-6">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-xs text-gray-600">Доставлено</p>
+                  <p className="text-2xl font-bold">{deliveredToday}</p>
+                </div>
+                <CheckCircle className="h-7 w-7 text-green-500" />
               </div>
-            ) : null}
+            </CardContent>
+          </Card>
 
-            <button
-              type="button"
-              onClick={() => createDriverMutation.mutate()}
-              disabled={!driverForm.name || !driverForm.email || !driverForm.password || createDriverMutation.isPending}
-              className="mt-6 inline-flex w-full items-center justify-center gap-2 rounded-full bg-slate-900 px-5 py-4 text-sm font-semibold text-white disabled:opacity-70"
-            >
-              <Plus className="h-4 w-4" />
-              Создать учётку водителя
-            </button>
-          </Panel>
+          <Card>
+            <CardContent className="pt-6">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-xs text-gray-600">Точек сети</p>
+                  <p className="text-2xl font-bold">{locations.length}</p>
+                </div>
+                <Warehouse className="h-7 w-7 text-orange-500" />
+              </div>
+            </CardContent>
+          </Card>
+        </div>
 
-          <Panel title="Карточки водителей" kicker="Состав">
-            <div className="mb-4 rounded-[22px] border border-emerald-200/80 bg-emerald-50/80 px-4 py-3 text-sm text-emerald-700">
-              Геопозиция водителей обновляется каждые 10 секунд на моковых GPS-данных.
-            </div>
-            <div className="grid gap-4 md:grid-cols-2">
-              {drivers.map((driver) => (
-                <Link
-                  key={driver.id}
-                  href={`/dashboard/drivers/${driver.id}`}
-                  className="rounded-[28px] border border-slate-200/80 bg-slate-50/80 p-5 transition hover:border-slate-300"
-                >
-                  <div className="flex items-start justify-between gap-3">
+        <Tabs defaultValue="overview" className="space-y-6">
+          <Card className="shadow-sm">
+            <CardContent className="p-2">
+              <TabsList className="grid grid-cols-4 w-full">
+                <TabsTrigger value="overview">Обзор</TabsTrigger>
+                <TabsTrigger value="drivers">Водители</TabsTrigger>
+                <TabsTrigger value="routes">Маршруты</TabsTrigger>
+                <TabsTrigger value="locations">Сеть</TabsTrigger>
+              </TabsList>
+            </CardContent>
+          </Card>
+
+          <TabsContent value="overview" className="space-y-6">
+            <div className="grid md:grid-cols-3 gap-6">
+              <div className="md:col-span-2 space-y-6">
+                <Card className="shadow-lg">
+                  <CardHeader>
+                    <CardTitle className="flex items-center gap-2">
+                      <MapPin className="h-5 w-5 text-blue-500" />
+                      Живая карта
+                    </CardTitle>
+                    <CardDescription>
+                      Отслеживайте рейсы в реальном времени
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent className="space-y-4">
+                    <DriverSelector
+                      drivers={driverSelectorData}
+                      selectedDriver={selectedDriver}
+                      onSelectDriver={setSelectedDriver}
+                    />
+                    {(() => {
+                      const points: Array<{
+                        id: string;
+                        entityId?: number;
+                        kind: "warehouse" | "pickup" | "driver";
+                        title: string;
+                        subtitle?: string;
+                        longitude: number;
+                        latitude: number;
+                        speed?: number | null;
+                      }> = [];
+
+                      const lines: Array<{
+                        id: string;
+                        name: string;
+                        color?: string;
+                        coordinates: [number, number][];
+                      }> = [];
+
+                      if (selectedDriverRoute?.startPoint) {
+                        points.push({
+                          id: `route-start-${selectedDriverRoute.id}`,
+                          entityId: selectedDriverRoute.startPoint.id,
+                          kind: "warehouse",
+                          title: selectedDriverRoute.startPoint.name,
+                          subtitle: `${selectedDriverRoute.startPoint.city}, ${selectedDriverRoute.startPoint.address}`,
+                          longitude: selectedDriverRoute.startPoint.lon,
+                          latitude: selectedDriverRoute.startPoint.lat,
+                        });
+                      }
+
+                      if (selectedDriverRoute?.endPoint) {
+                        points.push({
+                          id: `route-end-${selectedDriverRoute.id}`,
+                          entityId: selectedDriverRoute.endPoint.id,
+                          kind: "pickup",
+                          title: selectedDriverRoute.endPoint.name,
+                          subtitle: `${selectedDriverRoute.endPoint.city}, ${selectedDriverRoute.endPoint.address}`,
+                          longitude: selectedDriverRoute.endPoint.lon,
+                          latitude: selectedDriverRoute.endPoint.lat,
+                        });
+                      }
+
+                      if (selectedDriverRoute) {
+                        const coordinates: [number, number][] = [];
+                        if (
+                          selectedDriverRoute.startLon != null &&
+                          selectedDriverRoute.startLat != null
+                        ) {
+                          coordinates.push([
+                            selectedDriverRoute.startLon,
+                            selectedDriverRoute.startLat,
+                          ]);
+                        }
+                        if (Array.isArray(selectedDriverRoute.waypoints)) {
+                          selectedDriverRoute.waypoints.forEach((item: any) => {
+                            if (item?.lon != null && item?.lat != null) {
+                              coordinates.push([item.lon, item.lat]);
+                            }
+                          });
+                        }
+                        if (
+                          selectedDriverRoute.endLon != null &&
+                          selectedDriverRoute.endLat != null
+                        ) {
+                          coordinates.push([
+                            selectedDriverRoute.endLon,
+                            selectedDriverRoute.endLat,
+                          ]);
+                        }
+
+                        if (coordinates.length > 1) {
+                          lines.push({
+                            id: `route-${selectedDriverRoute.id}`,
+                            name: selectedDriverRoute.name,
+                            color: "#10b981",
+                            coordinates,
+                          });
+                        }
+                      }
+
+                      drivers.forEach((driver) => {
+                        const wsPos = driver.vehicle
+                          ? wsPositions[driver.vehicle.id]
+                          : null;
+                        const pos = wsPos || driver.latestPosition;
+                        if (!pos) return;
+
+                        points.push({
+                          id: `driver-${driver.id}`,
+                          entityId: driver.id,
+                          kind: "driver",
+                          title: driver.name,
+                          subtitle:
+                            driver.vehicle?.plateNumber || driver.email,
+                          longitude: pos.lon,
+                          latitude: pos.lat,
+                          speed: pos.speed ?? null,
+                        });
+                      });
+
+                      return (
+                        <MapView
+                          fitToData
+                          className="h-[420px] w-full rounded-xl"
+                          points={points}
+                          lines={lines}
+                          highlightedPointIds={
+                            selectedDriver ? [`driver-${selectedDriver}`] : []
+                          }
+                          onPointClick={(point) => {
+                            if (point.kind === "driver" && point.entityId) {
+                              setSelectedDriver(String(point.entityId));
+                            }
+                          }}
+                        />
+                      );
+                    })()}
+                  </CardContent>
+                </Card>
+
+                <Card className="shadow-lg">
+                  <CardHeader>
+                    <CardTitle>Активные маршруты</CardTitle>
+                  </CardHeader>
+                  <CardContent className="space-y-3">
+                    {activeRoutes.length === 0 ? (
+                      <p className="text-sm text-gray-500">
+                        Активных маршрутов пока нет
+                      </p>
+                    ) : (
+                      activeRoutes.slice(0, 5).map((route) => (
+                        <Card
+                          key={route.id}
+                          className="border-l-4 border-l-blue-500"
+                        >
+                          <CardContent className="pt-4">
+                            <div className="flex items-start justify-between gap-3">
+                              <div className="flex-1">
+                                <div className="flex items-center gap-2 flex-wrap mb-1">
+                                  <span className="font-semibold">
+                                    {route.name}
+                                  </span>
+                                  <Badge variant={statusTone(route.status)}>
+                                    {statusLabel(route.status)}
+                                  </Badge>
+                                </div>
+                                <p className="text-sm text-gray-600">
+                                  {route.startPoint?.name || "Старт"} →{" "}
+                                  {route.endPoint?.name || "Финиш"}
+                                </p>
+                                <p className="text-xs text-gray-500 mt-1">
+                                  Водитель:{" "}
+                                  {route.driver?.user?.name || "не назначен"} ·
+                                  ТС:{" "}
+                                  {route.vehicle?.plateNumber || "не назначен"}
+                                </p>
+                              </div>
+                              {typeof route.riskScore === "number" && (
+                                <div className="text-right">
+                                  <p className="text-xs text-gray-500">Риск</p>
+                                  <p className="text-sm font-semibold">
+                                    {Math.round(route.riskScore * 100)}%
+                                  </p>
+                                </div>
+                              )}
+                            </div>
+                          </CardContent>
+                        </Card>
+                      ))
+                    )}
+                  </CardContent>
+                </Card>
+              </div>
+
+              <div className="space-y-6">
+                <Card className="shadow-lg">
+                  <CardHeader>
+                    <CardTitle className="text-base">Водители в рейсе</CardTitle>
+                  </CardHeader>
+                  <CardContent className="space-y-3">
+                    {drivers.slice(0, 5).map((driver) => {
+                      const wsPos = driver.vehicle
+                        ? wsPositions[driver.vehicle.id]
+                        : null;
+                      return (
+                        <Link
+                          key={driver.id}
+                          href={`/dashboard/drivers/${driver.id}`}
+                          className="block rounded-lg border border-gray-200 p-3 hover:border-blue-300 transition-colors"
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="flex-1 min-w-0">
+                              <p className="text-sm font-medium truncate">
+                                {driver.name}
+                              </p>
+                              <p className="text-xs text-gray-500 truncate">
+                                {driver.vehicle?.plateNumber || "Без ТС"}
+                              </p>
+                              {wsPos && (
+                                <p className="text-[10px] text-emerald-600 mt-0.5">
+                                  Live · {wsPos.lat.toFixed(3)},{" "}
+                                  {wsPos.lon.toFixed(3)}
+                                </p>
+                              )}
+                            </div>
+                            <Badge variant={statusTone(driver.status)}>
+                              {statusLabel(driver.status)}
+                            </Badge>
+                          </div>
+                        </Link>
+                      );
+                    })}
+                  </CardContent>
+                </Card>
+
+                <Card className="shadow-lg">
+                  <CardHeader>
+                    <CardTitle className="text-base">Загруженность</CardTitle>
+                  </CardHeader>
+                  <CardContent className="space-y-4">
                     <div>
-                      <h3 className="text-lg font-semibold text-slate-900">{driver.name}</h3>
-                      <p className="mt-1 text-sm text-slate-500">{driver.email}</p>
+                      <div className="flex justify-between text-sm mb-1">
+                        <span className="text-gray-600">Водителей занято</span>
+                        <span className="font-semibold">
+                          {drivers.length - availableDrivers}/{drivers.length}
+                        </span>
+                      </div>
+                      <Progress
+                        value={
+                          drivers.length > 0
+                            ? ((drivers.length - availableDrivers) /
+                                drivers.length) *
+                              100
+                            : 0
+                        }
+                        className="h-2"
+                      />
                     </div>
-                    <span className="rounded-full bg-white px-3 py-1 text-xs text-slate-500">
-                      {driver.status}
-                    </span>
-                  </div>
-                  <div className="mt-4 grid gap-3 text-sm text-slate-600">
-                    <span>ТС: {driver.vehicle?.plateNumber || "не назначено"}</span>
-                    <span>Рейтинг: {driver.rating.toFixed(1)}</span>
-                    <span>
-                      GPS:{" "}
-                      {driver.latestPosition
-                        ? `${driver.latestPosition.lat.toFixed(3)}, ${driver.latestPosition.lon.toFixed(3)}`
-                        : "данных пока нет"}
-                    </span>
-                    <span>
-                      Скорость:{" "}
-                      {typeof driver.latestPosition?.speed === "number"
-                        ? `${Math.round(driver.latestPosition.speed)} км/ч`
-                        : "—"}
-                    </span>
-                    <span>
-                      Обновлено:{" "}
-                      {driver.latestPosition?.timestamp
-                        ? new Date(driver.latestPosition.timestamp).toLocaleTimeString("ru-RU")
-                        : "—"}
-                    </span>
-                  </div>
-                </Link>
-              ))}
-            </div>
-          </Panel>
-        </section>
-      ) : null}
-
-      {tab === "locations" ? (
-        <section className="mt-4 grid gap-4 xl:grid-cols-[0.94fr_1.06fr]">
-          <Panel title="Добавить склад или ПВЗ" kicker="Новая точка">
-            <MapView
-              points={locationMapPoints}
-              className="h-[380px] w-full rounded-[28px]"
-              selectable
-              selectedCoordinates={locationCoordinates}
-              fitToData
-              helperText="Кликните по карте или объекту. Широта и долгота больше не вводятся вручную."
-              onSelect={handleLocationPick}
-            />
-
-            <div className="mt-4 rounded-[24px] border border-sky-100 bg-sky-50/80 px-4 py-4 text-sm text-slate-600">
-              <strong className="block text-slate-900">Выбранная точка</strong>
-              <span className="mt-1 block">{locationSelectionLabel}</span>
-            </div>
-
-            <div className="mt-6 space-y-4">
-              <Input label="Название" value={locationForm.name} onChange={(value) => setLocationForm((current) => ({ ...current, name: value }))} />
-              <Input label="Код" value={locationForm.code} onChange={(value) => setLocationForm((current) => ({ ...current, code: value }))} />
-              <SelectField
-                label="Тип точки"
-                value={locationForm.type}
-                onChange={(value) => setLocationForm((current) => ({ ...current, type: value as LocationPoint["type"] }))}
-                options={[
-                  { value: "WAREHOUSE", label: "Склад" },
-                  { value: "PICKUP_POINT", label: "ПВЗ" },
-                ]}
-              />
-              <Input label="Город" value={locationForm.city} onChange={(value) => setLocationForm((current) => ({ ...current, city: value }))} />
-              <Input label="Адрес" value={locationForm.address} onChange={(value) => setLocationForm((current) => ({ ...current, address: value }))} />
-              <Input label="Примечание" value={locationForm.notes} onChange={(value) => setLocationForm((current) => ({ ...current, notes: value }))} />
-            </div>
-
-            <button
-              type="button"
-              onClick={() => createLocationMutation.mutate()}
-              disabled={!locationForm.name || !locationForm.city || !locationForm.address || !locationCoordinates || createLocationMutation.isPending}
-              className="mt-6 inline-flex w-full items-center justify-center gap-2 rounded-full bg-slate-900 px-5 py-4 text-sm font-semibold text-white disabled:opacity-70"
-            >
-              <Plus className="h-4 w-4" />
-              Добавить точку
-            </button>
-          </Panel>
-
-          <Panel title="Сетка складов и ПВЗ" kicker="Точки сети">
-            <div className="grid gap-4 md:grid-cols-2">
-              <div className="rounded-[30px] border border-slate-200/80 bg-slate-50/80 p-5">
-                <p className="text-xs uppercase tracking-[0.24em] text-slate-400">WAREHOUSE</p>
-                <h3 className="mt-3 text-xl font-semibold text-slate-900">Склады</h3>
-                <div className="mt-5 space-y-3">
-                  {warehouses.map((item) => (
-                    <LocationCard key={item.id} item={item} />
-                  ))}
-                </div>
-              </div>
-
-              <div className="rounded-[30px] border border-slate-200/80 bg-slate-50/80 p-5">
-                <p className="text-xs uppercase tracking-[0.24em] text-slate-400">PICKUP POINT</p>
-                <h3 className="mt-3 text-xl font-semibold text-slate-900">ПВЗ</h3>
-                <div className="mt-5 space-y-3">
-                  {pickupPoints.map((item) => (
-                    <LocationCard key={item.id} item={item} />
-                  ))}
-                </div>
+                    <div>
+                      <div className="flex justify-between text-sm mb-1">
+                        <span className="text-gray-600">Маршрутов активно</span>
+                        <span className="font-semibold">
+                          {activeRoutes.length}/{routes.length}
+                        </span>
+                      </div>
+                      <Progress
+                        value={
+                          routes.length > 0
+                            ? (activeRoutes.length / routes.length) * 100
+                            : 0
+                        }
+                        className="h-2"
+                      />
+                    </div>
+                  </CardContent>
+                </Card>
               </div>
             </div>
-          </Panel>
-        </section>
-      ) : null}
+          </TabsContent>
 
-      {tab === "routes" ? (
-        <section className="mt-4 grid gap-4 xl:grid-cols-[0.94fr_1.06fr]">
-          <Panel title="Собрать маршрут по карте" kicker="Новый маршрут">
-            <div className="grid gap-4 md:grid-cols-2">
-              <RoutePointCard
-                title="Старт"
-                description="Кликните по янтарной метке склада на карте"
-                point={selectedStartPoint}
-                tone="amber"
-                onReset={() => setRouteForm((current) => ({ ...current, startPointId: "" }))}
-              />
-              <RoutePointCard
-                title="Финиш"
-                description="Кликните по синей метке ПВЗ на карте"
-                point={selectedEndPoint}
-                tone="sky"
-                onReset={() => setRouteForm((current) => ({ ...current, endPointId: "" }))}
-              />
-            </div>
-
-            <div className="mt-6">
-              <MapView
-                points={locationMapPoints}
-                lines={routeDraftLines}
-                className="h-[420px] w-full rounded-[28px]"
-                fitToData
-                highlightedPointIds={highlightedRoutePointIds}
-                helperText="Выберите склад и ПВЗ прямо на карте. Маршрут строится по дорожной сети после создания."
-                onPointClick={handleRoutePointClick}
-              />
-            </div>
-
-            <div className="mt-6 space-y-4">
-              <Input label="Название маршрута" value={routeForm.name} onChange={(value) => setRouteForm((current) => ({ ...current, name: value }))} />
-              <SelectField
-                label="Водитель"
-                value={routeForm.driverId}
-                onChange={(value) => setRouteForm((current) => ({ ...current, driverId: value }))}
-                options={[
-                  { value: "", label: "Назначить позже" },
-                  ...drivers.map((driver) => ({
-                    value: String(driver.id),
-                    label: driver.name,
-                  })),
-                ]}
-              />
-              <SelectField
-                label="Транспорт"
-                value={routeForm.vehicleId}
-                onChange={(value) => setRouteForm((current) => ({ ...current, vehicleId: value }))}
-                options={[
-                  { value: "", label: "Назначить позже" },
-                  ...vehicles.map((vehicle) => ({
-                    value: String(vehicle.id),
-                    label: `${vehicle.plateNumber} · ${vehicle.model}`,
-                  })),
-                ]}
-              />
-            </div>
-
-            <button
-              type="button"
-              onClick={() => createRouteMutation.mutate()}
-              disabled={!routeForm.name || !routeForm.startPointId || !routeForm.endPointId || createRouteMutation.isPending}
-              className="mt-6 inline-flex w-full items-center justify-center gap-2 rounded-full bg-slate-900 px-5 py-4 text-sm font-semibold text-white disabled:opacity-70"
-            >
-              <Route className="h-4 w-4" />
-              Создать маршрут
-            </button>
-          </Panel>
-
-          <Panel title="Текущие рейсы" kicker="Журнал">
-            <div className="space-y-4">
-              {routes.map((route) => {
-                const routeMeta = getRouteRoutingMeta(route);
-
-                return (
-                  <div key={route.id} className="rounded-[28px] border border-slate-200/80 bg-slate-50/80 p-5">
-                    <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-                      <div>
-                        <h3 className="text-lg font-semibold text-slate-900">{route.name}</h3>
-                        <p className="mt-1 text-sm text-slate-500">
-                          {route.startPoint?.name || "Старт"} → {route.endPoint?.name || "Финиш"}
+          <TabsContent value="drivers" className="space-y-6">
+            <div className="grid md:grid-cols-2 gap-6">
+              <Card className="shadow-lg">
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2">
+                    <Plus className="h-5 w-5 text-emerald-500" />
+                    Добавить водителя
+                  </CardTitle>
+                  <CardDescription>
+                    Выдача учётной записи и доступа
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  {driverMessage && (
+                    <Card className="border-emerald-200 bg-emerald-50">
+                      <CardContent className="pt-4">
+                        <p className="text-sm text-emerald-800">
+                          {driverMessage}
                         </p>
-                      </div>
-                      <div className="flex flex-wrap gap-2 text-xs">
-                        <span className="rounded-full bg-white px-3 py-1 text-slate-500">
-                          {route.status}
-                        </span>
-                        <span className="rounded-full bg-white px-3 py-1 text-slate-500">
-                          Risk {Math.round((route.riskScore || 0) * 100)}%
-                        </span>
-                      </div>
-                    </div>
+                      </CardContent>
+                    </Card>
+                  )}
+                  <div className="space-y-2">
+                    <Label>Имя водителя</Label>
+                    <Input
+                      value={driverForm.name}
+                      onChange={(e) =>
+                        setDriverForm({ ...driverForm, name: e.target.value })
+                      }
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Email</Label>
+                    <Input
+                      type="email"
+                      value={driverForm.email}
+                      onChange={(e) =>
+                        setDriverForm({ ...driverForm, email: e.target.value })
+                      }
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Телефон</Label>
+                    <Input
+                      value={driverForm.phone}
+                      onChange={(e) =>
+                        setDriverForm({ ...driverForm, phone: e.target.value })
+                      }
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Пароль</Label>
+                    <Input
+                      value={driverForm.password}
+                      onChange={(e) =>
+                        setDriverForm({
+                          ...driverForm,
+                          password: e.target.value,
+                        })
+                      }
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Транспорт</Label>
+                    <Select
+                      value={driverForm.vehicleId}
+                      onValueChange={(v) =>
+                        setDriverForm({ ...driverForm, vehicleId: v })
+                      }
+                    >
+                      <SelectTrigger>
+                        <SelectValue placeholder="Назначить позже" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {vehicles.map((v) => (
+                          <SelectItem key={v.id} value={String(v.id)}>
+                            {v.plateNumber} · {v.model}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <Button
+                    onClick={() => createDriverMutation.mutate()}
+                    disabled={
+                      !driverForm.name ||
+                      !driverForm.email ||
+                      !driverForm.password ||
+                      createDriverMutation.isPending
+                    }
+                    className="w-full bg-emerald-500 hover:bg-emerald-600"
+                  >
+                    {createDriverMutation.isPending ? (
+                      <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                    ) : (
+                      <Plus className="h-4 w-4 mr-2" />
+                    )}
+                    Создать учётку
+                  </Button>
+                </CardContent>
+              </Card>
 
-                    <div className="mt-4 grid gap-3 text-sm text-slate-600 md:grid-cols-3">
-                      <span>Водитель: {route.driver?.user?.name || "не назначен"}</span>
-                      <span>ТС: {route.vehicle?.plateNumber || "не назначено"}</span>
-                      <span>ETA: {route.estimatedTime ? `${route.estimatedTime} мин` : "—"}</span>
-                    </div>
+              <Card className="shadow-lg">
+                <CardHeader>
+                  <CardTitle>Состав водителей</CardTitle>
+                  <CardDescription>{drivers.length} всего</CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  {drivers.map((driver) => {
+                    const wsPos = driver.vehicle
+                      ? wsPositions[driver.vehicle.id]
+                      : null;
+                    return (
+                      <Link
+                        key={driver.id}
+                        href={`/dashboard/drivers/${driver.id}`}
+                        className="block rounded-lg border border-gray-200 p-4 hover:border-emerald-300 transition-colors"
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="flex-1">
+                            <p className="font-semibold">{driver.name}</p>
+                            <p className="text-sm text-gray-600">
+                              {driver.email}
+                            </p>
+                            <div className="mt-2 flex flex-wrap gap-2 text-xs text-gray-500">
+                              <span>
+                                ТС:{" "}
+                                {driver.vehicle?.plateNumber || "не назначено"}
+                              </span>
+                              <span>
+                                Рейтинг: {driver.rating?.toFixed(1) ?? "—"}
+                              </span>
+                            </div>
+                            {wsPos && (
+                              <p className="text-[11px] text-emerald-600 mt-1">
+                                Live GPS · {wsPos.lat.toFixed(3)},{" "}
+                                {wsPos.lon.toFixed(3)}
+                              </p>
+                            )}
+                          </div>
+                          <Badge variant={statusTone(driver.status)}>
+                            {statusLabel(driver.status)}
+                          </Badge>
+                        </div>
+                      </Link>
+                    );
+                  })}
+                </CardContent>
+              </Card>
+            </div>
+          </TabsContent>
 
-                    {routeMeta ? (
-                      <div className="mt-4 rounded-[22px] border border-slate-200 bg-white px-4 py-3 text-sm text-slate-600">
-                        <div className="flex flex-wrap gap-x-4 gap-y-2">
-                          <span>Источник: {routeMeta.sourceLabel}</span>
-                          <span>Средняя скорость: {routeMeta.avgSpeedKmh ?? "—"} км/ч</span>
-                          <span>Дорожный риск: {routeMeta.roadSituationPercent ?? 0}%</span>
-                          <span>События по пути: {routeMeta.eventCount}</span>
+          <TabsContent value="routes" className="space-y-6">
+            <Card className="shadow-lg">
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <RouteIcon className="h-5 w-5 text-emerald-500" />
+                  Создать маршрут
+                </CardTitle>
+                <CardDescription>
+                  Выбор склада и ПВЗ (без ручного ввода координат)
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                {routeSuccess && (
+                  <Card className="border-emerald-200 bg-emerald-50">
+                    <CardContent className="pt-4">
+                      <p className="text-sm text-emerald-800 flex items-center gap-2">
+                        <CheckCircle className="h-4 w-4" />
+                        {routeSuccess}
+                      </p>
+                    </CardContent>
+                  </Card>
+                )}
+
+                <div className="grid gap-4 md:grid-cols-2">
+                  <div className="space-y-2">
+                    <Label>Склад (точка А)</Label>
+                    <Select
+                      value={routeForm.startPointId}
+                      onValueChange={(v) =>
+                        setRouteForm((current) => ({ ...current, startPointId: v }))
+                      }
+                    >
+                      <SelectTrigger>
+                        <SelectValue placeholder="Выберите склад" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {warehouses.map((item) => (
+                          <SelectItem key={item.id} value={String(item.id)}>
+                            {item.city} · {item.name}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-2">
+                    <Label>ПВЗ (точка Б)</Label>
+                    <Select
+                      value={routeForm.endPointId}
+                      onValueChange={(v) =>
+                        setRouteForm((current) => ({ ...current, endPointId: v }))
+                      }
+                    >
+                      <SelectTrigger>
+                        <SelectValue placeholder="Выберите ПВЗ" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {pickupPoints.map((item) => (
+                          <SelectItem key={item.id} value={String(item.id)}>
+                            {item.city} · {item.name}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+
+                {routeForm.startPointId && routeForm.endPointId ? (
+                  (() => {
+                    const start = locations.find(
+                      (item) => item.id === Number(routeForm.startPointId),
+                    );
+                    const end = locations.find(
+                      (item) => item.id === Number(routeForm.endPointId),
+                    );
+                    if (!start || !end) return null;
+
+                    return (
+                      <div className="rounded-2xl border border-gray-200 overflow-hidden">
+                        <MapView
+                          fitToData
+                          className="h-[360px] w-full rounded-none"
+                          points={[
+                            {
+                              id: `start-${start.id}`,
+                              entityId: start.id,
+                              kind: "warehouse",
+                              title: start.name,
+                              subtitle: `${start.city}, ${start.address}`,
+                              longitude: start.lon,
+                              latitude: start.lat,
+                            },
+                            {
+                              id: `end-${end.id}`,
+                              entityId: end.id,
+                              kind: "pickup",
+                              title: end.name,
+                              subtitle: `${end.city}, ${end.address}`,
+                              longitude: end.lon,
+                              latitude: end.lat,
+                            },
+                          ]}
+                          lines={[
+                            {
+                              id: "draft-route",
+                              name: "Draft",
+                              color: "#10b981",
+                              coordinates: [
+                                [start.lon, start.lat],
+                                [end.lon, end.lat],
+                              ],
+                            },
+                          ]}
+                        />
+                      </div>
+                    );
+                  })()
+                ) : null}
+
+                <div className="grid md:grid-cols-3 gap-4">
+                  <div className="space-y-2">
+                    <Label>Название</Label>
+                    <Input
+                      placeholder="(необязательно)"
+                      value={routeForm.name}
+                      onChange={(e) =>
+                        setRouteForm((current) => ({ ...current, name: e.target.value }))
+                      }
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Водитель</Label>
+                    <Select
+                      value={routeForm.driverId}
+                      onValueChange={(v) =>
+                        setRouteForm((current) => ({ ...current, driverId: v }))
+                      }
+                    >
+                      <SelectTrigger>
+                        <SelectValue placeholder="Назначить позже" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {drivers.map((d) => (
+                          <SelectItem key={d.id} value={String(d.id)}>
+                            {d.name}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Транспорт</Label>
+                    <Select
+                      value={routeForm.vehicleId}
+                      onValueChange={(v) =>
+                        setRouteForm((current) => ({ ...current, vehicleId: v }))
+                      }
+                    >
+                      <SelectTrigger>
+                        <SelectValue placeholder="Назначить позже" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {vehicles.map((v) => (
+                          <SelectItem key={v.id} value={String(v.id)}>
+                            {v.plateNumber}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+
+                <Button
+                  onClick={() => createRouteMutation.mutate()}
+                  disabled={
+                    !routeForm.startPointId ||
+                    !routeForm.endPointId ||
+                    createRouteMutation.isPending
+                  }
+                  className="w-full bg-emerald-500 hover:bg-emerald-600"
+                >
+                  {createRouteMutation.isPending ? (
+                    <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                  ) : (
+                    <RouteIcon className="h-4 w-4 mr-2" />
+                  )}
+                  Создать маршрут
+                </Button>
+              </CardContent>
+            </Card>
+
+            <Card className="shadow-lg">
+              <CardHeader>
+                <CardTitle>Текущие рейсы</CardTitle>
+                <CardDescription>
+                  {routes.length} маршрутов в журнале
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                {routes.map((route) => (
+                  <Card key={route.id} className="border-l-4 border-l-blue-500">
+                    <CardContent className="pt-4">
+                      <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div className="flex-1">
+                          <div className="flex items-center gap-2 flex-wrap mb-1">
+                            <span className="font-semibold">{route.name}</span>
+                            <Badge variant={statusTone(route.status)}>
+                              {statusLabel(route.status)}
+                            </Badge>
+                            {typeof route.riskScore === "number" && (
+                              <Badge variant="outline">
+                                Risk {Math.round(route.riskScore * 100)}%
+                              </Badge>
+                            )}
+                          </div>
+                          <p className="text-sm text-gray-600 mb-1">
+                            {route.startPoint?.name || "Старт"} →{" "}
+                            {route.endPoint?.name || "Финиш"}
+                          </p>
+                          <div className="flex flex-wrap gap-x-4 text-xs text-gray-500">
+                            <span>
+                              Водитель:{" "}
+                              {route.driver?.user?.name || "не назначен"}
+                            </span>
+                            <span>
+                              ТС: {route.vehicle?.plateNumber || "—"}
+                            </span>
+                            <span>
+                              ETA:{" "}
+                              {route.estimatedTime
+                                ? `${route.estimatedTime} мин`
+                                : "—"}
+                            </span>
+                          </div>
                         </div>
                       </div>
-                    ) : null}
+                    </CardContent>
+                  </Card>
+                ))}
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          <TabsContent value="locations" className="space-y-6">
+            <div className="grid md:grid-cols-2 gap-6">
+              <Card className="shadow-lg">
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2">
+                    <Plus className="h-5 w-5 text-emerald-500" />
+                    Новая точка сети
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  {/* Name + Type row */}
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="space-y-2">
+                      <Label>Название</Label>
+                      <Input
+                        placeholder="Склад Центральный"
+                        value={locationForm.name}
+                        onChange={(e) => setLocationForm({ ...locationForm, name: e.target.value })}
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label>Тип</Label>
+                      <Select
+                        value={locationForm.type}
+                        onValueChange={(v) => {
+                          const t = v as LocationPoint["type"];
+                          setLocationForm({ ...locationForm, type: t, code: generateLocationCode(t) });
+                        }}
+                      >
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="WAREHOUSE">Склад</SelectItem>
+                          <SelectItem value="PICKUP_POINT">ПВЗ</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
                   </div>
-                );
-              })}
+
+                  {/* Auto-generated code */}
+                  <div className="flex items-center justify-between rounded-xl border border-dashed border-gray-200 bg-gray-50 px-4 py-2.5">
+                    <div>
+                      <p className="text-xs text-gray-500">Код точки (авто)</p>
+                      <p className="font-mono text-sm font-semibold text-gray-800">{locationForm.code}</p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setLocationForm((f) => ({ ...f, code: generateLocationCode(f.type) }))}
+                      className="rounded-lg px-2 py-1 text-xs text-gray-500 hover:bg-gray-200 transition"
+                    >
+                      Обновить
+                    </button>
+                  </div>
+
+                  {/* Address search with autocomplete */}
+                  <div className="space-y-2">
+                    <Label>Поиск города / адреса</Label>
+                    <div className="relative">
+                      <Input
+                        value={addrQuery}
+                        onChange={(e) => handleAddrSearch(e.target.value)}
+                        onBlur={() => setTimeout(() => setShowAddrDropdown(false), 150)}
+                        placeholder="Начните вводить город или адрес..."
+                      />
+                      {addrLoading && (
+                        <Loader2 className="absolute right-3 top-1/2 -translate-y-1/2 h-4 w-4 animate-spin text-gray-400" />
+                      )}
+                      {showAddrDropdown && addrSuggestions.length > 0 && (
+                        <div className="absolute z-50 top-full mt-1 w-full rounded-xl border border-gray-200 bg-white shadow-lg overflow-hidden">
+                          {addrSuggestions.map((s, i) => (
+                            <button
+                              key={i}
+                              type="button"
+                              onMouseDown={() => handleAddrSelect(s)}
+                              className="w-full text-left px-4 py-3 hover:bg-gray-50 border-b border-gray-100 last:border-0 transition"
+                            >
+                              <p className="text-sm font-medium text-gray-900 truncate">{s.city || s.displayName}</p>
+                              <p className="text-xs text-gray-500 truncate">{s.displayName}</p>
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* City + Address editable after selection */}
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="space-y-2">
+                      <Label>Город</Label>
+                      <Input
+                        value={locationForm.city}
+                        placeholder="Москва"
+                        onChange={(e) => setLocationForm({ ...locationForm, city: e.target.value })}
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label>Адрес</Label>
+                      <Input
+                        value={locationForm.address}
+                        placeholder="ул. Тверская, 1"
+                        onChange={(e) => setLocationForm({ ...locationForm, address: e.target.value })}
+                      />
+                    </div>
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Точка на карте</Label>
+                    <div className="rounded-2xl border border-gray-200 overflow-hidden">
+                      <MapView
+                        selectable
+                        fitToData
+                        className="h-[320px] w-full rounded-none"
+                        selectedCoordinates={locationPick}
+                        points={locations.map((item) => ({
+                          id: `location-${item.id}`,
+                          entityId: item.id,
+                          kind:
+                            item.type === "WAREHOUSE"
+                              ? ("warehouse" as const)
+                              : ("pickup" as const),
+                          title: item.name,
+                          subtitle: `${item.city}, ${item.address}`,
+                          longitude: item.lon,
+                          latitude: item.lat,
+                        }))}
+                        onSelect={(selection) => {
+                          const coords: [number, number] = [
+                            selection.longitude,
+                            selection.latitude,
+                          ];
+                          setLocationPick(coords);
+                          setLocationForm((current) => ({
+                            ...current,
+                            lat: selection.latitude.toFixed(6),
+                            lon: selection.longitude.toFixed(6),
+                          }));
+                        }}
+                      />
+                    </div>
+                    <p className="text-xs text-gray-500">
+                      {locationPick
+                        ? `Выбрано: ${locationPick[1].toFixed(6)}, ${locationPick[0].toFixed(6)}`
+                        : "Кликните по карте, чтобы выбрать координату"}
+                    </p>
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Примечание</Label>
+                    <Textarea
+                      value={locationForm.notes}
+                      rows={2}
+                      onChange={(e) =>
+                        setLocationForm({
+                          ...locationForm,
+                          notes: e.target.value,
+                        })
+                      }
+                    />
+                  </div>
+                  <Button
+                    onClick={() => createLocationMutation.mutate()}
+                    disabled={
+                      !locationForm.name ||
+                      !locationForm.city ||
+                      !locationForm.address ||
+                      !locationPick ||
+                      createLocationMutation.isPending
+                    }
+                    className="w-full bg-emerald-500 hover:bg-emerald-600"
+                  >
+                    {createLocationMutation.isPending ? (
+                      <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                    ) : (
+                      <Plus className="h-4 w-4 mr-2" />
+                    )}
+                    Добавить
+                  </Button>
+                </CardContent>
+              </Card>
+
+              <div className="space-y-4">
+                <Card className="shadow-lg">
+                  <CardHeader>
+                    <CardTitle className="flex items-center gap-2 text-base">
+                      <Warehouse className="h-5 w-5 text-orange-500" />
+                      Склады ({warehouses.length})
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent className="space-y-2">
+                    {warehouses.length === 0 && (
+                      <p className="text-sm text-gray-400 py-2 text-center">Нет складов</p>
+                    )}
+                    {warehouses.map((item) => (
+                      <div key={item.id} className="rounded-xl border border-gray-200 bg-gray-50 p-3 space-y-1">
+                        <div className="flex items-start justify-between gap-2">
+                          <p className="font-semibold text-sm leading-tight">{item.name}</p>
+                          {item.code && (
+                            <span className="shrink-0 font-mono text-xs bg-orange-100 text-orange-700 rounded px-1.5 py-0.5">{item.code}</span>
+                          )}
+                        </div>
+                        <p className="text-xs text-gray-600">{item.city}</p>
+                        <p className="text-xs text-gray-500 truncate">{item.address}</p>
+                        <p className="text-xs text-gray-400 font-mono">{item.lat.toFixed(4)}, {item.lon.toFixed(4)}</p>
+                      </div>
+                    ))}
+                  </CardContent>
+                </Card>
+
+                <Card className="shadow-lg">
+                  <CardHeader>
+                    <CardTitle className="flex items-center gap-2 text-base">
+                      <Package className="h-5 w-5 text-blue-500" />
+                      ПВЗ ({pickupPoints.length})
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent className="space-y-2">
+                    {pickupPoints.length === 0 && (
+                      <p className="text-sm text-gray-400 py-2 text-center">Нет ПВЗ</p>
+                    )}
+                    {pickupPoints.map((item) => (
+                      <div key={item.id} className="rounded-xl border border-gray-200 bg-gray-50 p-3 space-y-1">
+                        <div className="flex items-start justify-between gap-2">
+                          <p className="font-semibold text-sm leading-tight">{item.name}</p>
+                          {item.code && (
+                            <span className="shrink-0 font-mono text-xs bg-blue-100 text-blue-700 rounded px-1.5 py-0.5">{item.code}</span>
+                          )}
+                        </div>
+                        <p className="text-xs text-gray-600">{item.city}</p>
+                        <p className="text-xs text-gray-500 truncate">{item.address}</p>
+                        <p className="text-xs text-gray-400 font-mono">{item.lat.toFixed(4)}, {item.lon.toFixed(4)}</p>
+                      </div>
+                    ))}
+                  </CardContent>
+                </Card>
+              </div>
             </div>
-          </Panel>
-        </section>
-      ) : null}
-
-      {tab === "map" ? (
-        <Panel title="Общая карта сети" kicker="Live map">
-          <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
-            <div>
-              <h2 className="font-[Georgia] text-2xl text-slate-900">
-                Склады, ПВЗ, транспорт и дорожные маршруты
-              </h2>
-              <p className="mt-3 max-w-3xl text-sm leading-7 text-slate-600">
-                Карта работает на русском. В режиме 2GIS доступны клики по объектам,
-                зданиям и организациям, в fallback-режиме остаются кликабельными ваши
-                точки и выбранные позиции.
-              </p>
-            </div>
-          </div>
-
-          <div className="mt-6">
-            <MapView
-              lines={routeLines}
-              points={mapPoints}
-              className="h-[720px] w-full rounded-[28px]"
-            />
-          </div>
-        </Panel>
-      ) : null}
-    </main>
-  );
-}
-
-function MetricCard({
-  icon,
-  label,
-  value,
-}: {
-  icon: ReactNode;
-  label: string;
-  value: number;
-}) {
-  return (
-    <article className="rounded-[30px] border border-white/70 bg-white/92 p-5 shadow-[0_30px_90px_rgba(148,163,184,0.16)]">
-      <div className="mb-4 inline-flex rounded-2xl bg-slate-900 p-3 text-white">{icon}</div>
-      <span className="block text-sm text-slate-500">{label}</span>
-      <strong className="mt-3 block text-3xl text-slate-900">{value}</strong>
-    </article>
-  );
-}
-
-function Panel({
-  title,
-  kicker,
-  children,
-}: {
-  title: string;
-  kicker: string;
-  children: ReactNode;
-}) {
-  return (
-    <article className="rounded-[34px] border border-white/70 bg-white/95 p-6 shadow-[0_30px_90px_rgba(148,163,184,0.18)]">
-      <p className="text-xs uppercase tracking-[0.32em] text-slate-400">{kicker}</p>
-      <h2 className="mt-3 font-[Georgia] text-2xl text-slate-900">{title}</h2>
-      <div className="mt-6">{children}</div>
-    </article>
-  );
-}
-
-function Input({
-  label,
-  value,
-  onChange,
-}: {
-  label: string;
-  value: string;
-  onChange: (value: string) => void;
-}) {
-  return (
-    <label className="block">
-      <span className="mb-2 block text-sm text-slate-500">{label}</span>
-      <input
-        value={value}
-        onChange={(event) => onChange(event.target.value)}
-        className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 outline-none transition focus:border-sky-300 focus:bg-white"
-      />
-    </label>
-  );
-}
-
-function SelectField({
-  label,
-  value,
-  onChange,
-  options,
-}: {
-  label: string;
-  value: string;
-  onChange: (value: string) => void;
-  options: Array<{ value: string; label: string }>;
-}) {
-  return (
-    <label className="block">
-      <span className="mb-2 block text-sm text-slate-500">{label}</span>
-      <select
-        value={value}
-        onChange={(event) => onChange(event.target.value)}
-        className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 outline-none transition focus:border-sky-300 focus:bg-white"
-      >
-        {options.map((option) => (
-          <option key={`${label}-${option.value}`} value={option.value}>
-            {option.label}
-          </option>
-        ))}
-      </select>
-    </label>
-  );
-}
-
-function LocationCard({ item }: { item: LocationPoint }) {
-  return (
-    <div className="rounded-[24px] border border-slate-200/80 bg-white p-4">
-      <strong className="block text-slate-900">{item.name}</strong>
-      <span className="mt-1 block text-sm text-slate-500">
-        {item.city}, {item.address}
-      </span>
-      <span className="mt-3 block text-xs uppercase tracking-[0.24em] text-slate-400">
-        {item.code}
-      </span>
-    </div>
-  );
-}
-
-function RoutePointCard({
-  title,
-  description,
-  point,
-  tone,
-  onReset,
-}: {
-  title: string;
-  description: string;
-  point: LocationPoint | null;
-  tone: "amber" | "sky";
-  onReset: () => void;
-}) {
-  const toneClass =
-    tone === "amber"
-      ? "border-amber-100 bg-amber-50/70"
-      : "border-sky-100 bg-sky-50/70";
-
-  return (
-    <div className={`rounded-[24px] border px-4 py-4 ${toneClass}`}>
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <p className="text-xs uppercase tracking-[0.24em] text-slate-400">{title}</p>
-          <strong className="mt-2 block text-slate-900">
-            {point ? point.name : "Точка пока не выбрана"}
-          </strong>
-          <span className="mt-1 block text-sm text-slate-600">
-            {point ? `${point.city}, ${point.address}` : description}
-          </span>
-        </div>
-        {point ? (
-          <button
-            type="button"
-            onClick={onReset}
-            className="rounded-full border border-white/80 bg-white px-3 py-1 text-xs text-slate-500"
-          >
-            Сбросить
-          </button>
-        ) : null}
+          </TabsContent>
+        </Tabs>
       </div>
     </div>
   );
-}
-
-function buildRouteCoordinates(route: RouteSummary): [number, number][] {
-  const points: [number, number][] = [];
-
-  if (route.startLat != null && route.startLon != null) {
-    points.push([route.startLon, route.startLat]);
-  }
-
-  if (Array.isArray(route.waypoints)) {
-    route.waypoints.forEach((waypoint) => {
-      if (waypoint?.lon != null && waypoint?.lat != null) {
-        points.push([waypoint.lon, waypoint.lat]);
-      }
-    });
-  }
-
-  if (route.endLat != null && route.endLon != null) {
-    points.push([route.endLon, route.endLat]);
-  }
-
-  return points;
-}
-
-function routeColor(riskScore?: number | null) {
-  if (!riskScore) return "#0f766e";
-  if (riskScore >= 0.65) return "#dc2626";
-  if (riskScore >= 0.4) return "#d97706";
-  return "#0f766e";
-}
-
-function getRouteRoutingMeta(route: RouteSummary) {
-  const routing = route.riskFactors?.routing;
-  if (!routing) return null;
-
-  return {
-    sourceLabel: routing.source === "osrm" ? "OSRM / дорожная сеть" : "Fallback / demo",
-    avgSpeedKmh:
-      typeof routing.avg_speed_kmh === "number" ? Math.round(routing.avg_speed_kmh) : null,
-    alternatives:
-      typeof routing.alternatives_considered === "number" ? routing.alternatives_considered : 1,
-    eventCount: Array.isArray(routing.road_events) ? routing.road_events.length : 0,
-    roadSituationPercent:
-      typeof route.riskFactors?.road_situation === "number"
-        ? Math.round(route.riskFactors.road_situation * 100)
-        : null,
-  };
 }

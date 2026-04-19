@@ -1,11 +1,13 @@
 "use client";
 
-import DriverWorkspace from "@/components/driver/DriverWorkspace";
-import { getDriver } from "@/lib/api";
-import { getStoredToken, getStoredUser } from "@/lib/session";
-import { useQuery } from "@tanstack/react-query";
-import { useParams, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
+import { useParams, useRouter } from "next/navigation";
+import { useQuery } from "@tanstack/react-query";
+
+import DriverWorkspace from "@/components/driver/DriverWorkspace";
+import { Card } from "@/components/ui/card";
+import { getDriver } from "@/lib/api";
+import { getStoredUser } from "@/lib/session";
 
 export default function DriverAdminPage() {
   const router = useRouter();
@@ -13,39 +15,43 @@ export default function DriverAdminPage() {
   const [ready, setReady] = useState(false);
 
   useEffect(() => {
-    const token = getStoredToken();
     const user = getStoredUser();
-
-    if (!token || !user) {
+    if (!user) {
       router.replace("/login");
       return;
     }
-
     if (user.role === "DRIVER") {
-      router.replace("/driver");
+      router.replace("/lk");
       return;
     }
-
     setReady(true);
   }, [router]);
 
-  const { data, isLoading } = useQuery({
-    queryKey: ["driver", params?.id],
-    queryFn: () => getDriver(Number(params.id)),
-    enabled: ready && Boolean(params?.id),
+  const driverId = Number(params?.id);
+  const { data, isLoading, error } = useQuery({
+    queryKey: ["driver", driverId],
+    queryFn: () => getDriver(driverId),
+    enabled: ready && Number.isFinite(driverId) && driverId > 0,
     refetchInterval: 10_000,
     refetchIntervalInBackground: true,
   });
 
-  if (!ready || isLoading || !data) {
+  if (!ready || isLoading) {
     return (
-      <main className="mx-auto flex min-h-screen max-w-7xl items-center px-4 py-8 md:px-6">
-        <div className="w-full rounded-[36px] border border-white/70 bg-white/90 p-10 text-slate-600 shadow-[0_30px_90px_rgba(148,163,184,0.18)]">
-          Загружаем карточку водителя...
-        </div>
+      <main className="mx-auto flex min-h-screen max-w-7xl items-center justify-center px-4 py-8">
+        <Card className="p-10 text-gray-600">Загружаем карточку водителя...</Card>
+      </main>
+    );
+  }
+
+  if (error || !data) {
+    return (
+      <main className="mx-auto flex min-h-screen max-w-7xl items-center justify-center px-4 py-8">
+        <Card className="p-10 text-gray-600">Водитель не найден.</Card>
       </main>
     );
   }
 
   return <DriverWorkspace driver={data} mode="admin" />;
 }
+

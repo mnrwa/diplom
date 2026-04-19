@@ -1,609 +1,384 @@
 "use client";
 
-import Link from "next/link";
-import { useRouter } from "next/navigation";
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useState } from "react";
 import {
-  ArrowRight,
-  Boxes,
-  Briefcase,
-  Building2,
-  Clock3,
-  MapPinned,
-  Plus,
-  Route,
+  CheckCircle,
+  Clock,
+  MapPin,
+  Package,
   Search,
-  ShieldCheck,
   Truck,
-  Warehouse,
 } from "lucide-react";
-import { getStoredUser } from "@/lib/session";
+import { toast } from "@/lib/sonner";
 
-const trackingSamples = [
-  {
-    number: "DL-240518",
-    status: "В пути",
-    statusTone: "amber" as const,
-    route: "Новосибирск → Екатеринбург → Москва",
-    eta: "6 апреля, 13:30",
-    service: "Сборный груз",
-    cargo: "4 места, 186 кг",
-    lastEvent: "Перегружен на магистральный рейс в Екатеринбурге",
-    progress: 72,
-  },
-  {
-    number: "CDEK-884301",
-    status: "Готов к выдаче",
-    statusTone: "emerald" as const,
-    route: "Москва → Иркутск",
-    eta: "Сегодня до 20:00",
-    service: "Экспресс до ПВЗ",
-    cargo: "1 коробка, 7 кг",
-    lastEvent: "Доставлен в ПВЗ и ожидает получателя",
-    progress: 100,
-  },
-  {
-    number: "ALP-100245",
-    status: "Оформляется",
-    statusTone: "sky" as const,
-    route: "Красноярск → Омск",
-    eta: "7 апреля, 11:00",
-    service: "Доставка до двери",
-    cargo: "2 палеты, 412 кг",
-    lastEvent: "Подтверждены данные отправителя и время забора",
-    progress: 18,
-  },
-];
+import { Button } from "@/components/ui/button";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
+import { publicCreateOrder, publicGeocodeAddress, publicTrackRoute } from "@/lib/api";
 
-const heroStats = [
-  { value: "Трекинг 24/7", label: "публичный статус по номеру заказа или накладной" },
-  { value: "Склад → ПВЗ", label: "создание отправки без ручной работы с координатами" },
-  { value: "ETA + события", label: "маршрут, дорожная ситуация и сигналы по пути" },
-];
+type TrackingHistoryItem = {
+  date: string;
+  status: string;
+  location: string;
+};
 
-const serviceCards = [
-  {
-    icon: Truck,
-    title: "Сборные грузы и LTL",
-    text: "Маршруты между терминалами, складами и ПВЗ с учётом дорог, ETA и риска по участкам.",
-  },
-  {
-    icon: Warehouse,
-    title: "Складская логистика",
-    text: "Отдельный контур для сети складов и пунктов выдачи: приём, отгрузка и контроль узлов маршрута.",
-  },
-  {
-    icon: Briefcase,
-    title: "Для бизнеса и маркетплейсов",
-    text: "Корпоративные отправки, поставки на маркетплейсы, работа с регулярными рейсами и окнами доставки.",
-  },
-  {
-    icon: Building2,
-    title: "Личный кабинет и диспетчерская",
-    text: "Клиент видит трекинг и статус заказа, оператор управляет водителями, точками и планированием.",
-  },
-];
+type TrackingResult = {
+  number: string;
+  status: string;
+  currentLocation: string;
+  estimatedDelivery: string;
+  history: TrackingHistoryItem[];
+};
 
-const businessFlow = [
-  {
-    step: "01",
-    title: "Найдите заказ за секунду",
-    text: "На главной странице пользователь вводит номер отправления и сразу получает статус, ETA и последнее событие.",
-  },
-  {
-    step: "02",
-    title: "Создайте новую отправку",
-    text: "Оформление начинается с простых полей: откуда, куда, тип груза и вес. Дальше заявка уходит в рабочий контур.",
-  },
-  {
-    step: "03",
-    title: "Следите за движением",
-    text: "Маршрут, транспорт, новости по пути и отклонения собираются в единую ленту для диспетчера и водителя.",
-  },
-];
+function formatDate(value?: string | null) {
+  if (!value) return "—";
+  try {
+    return new Date(value).toLocaleString("ru-RU", {
+      day: "2-digit",
+      month: "long",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  } catch {
+    return value;
+  }
+}
 
-const routeDirections = [
-  {
-    title: "Межтерминальная доставка",
-    text: "Классический сценарий федеральных перевозчиков: терминал → магистраль → терминал → получатель.",
-    badge: "LTL / FTL",
-  },
-  {
-    title: "Склад → ПВЗ",
-    text: "Подходит для e-commerce, last mile и маркетплейсов, когда важны быстрые окна доставки и прозрачный статус.",
-    badge: "e-commerce",
-  },
-  {
-    title: "Забор у отправителя",
-    text: "Создание заявки с выездом машины к клиенту, последующим трекингом и информированием по этапам.",
-    badge: "door-to-door",
-  },
-];
+function routeStatusLabel(status?: string) {
+  switch (status) {
+    case "PLANNED":
+      return "Запланирован";
+    case "ACTIVE":
+      return "В пути";
+    case "COMPLETED":
+      return "Доставлено";
+    case "CANCELLED":
+      return "Отменён";
+    case "RECALCULATING":
+      return "Пересчёт маршрута";
+    default:
+      return "—";
+  }
+}
 
-export default function LandingPage() {
-  const router = useRouter();
-  const [cabinetHref, setCabinetHref] = useState("/login");
-  const [cabinetLabel, setCabinetLabel] = useState("Войти в личный кабинет");
-  const [createHref, setCreateHref] = useState("/login?mode=register");
-  const [trackDraft, setTrackDraft] = useState(trackingSamples[0].number);
-  const [submittedTrack, setSubmittedTrack] = useState(trackingSamples[0].number);
-  const [newOrderDraft, setNewOrderDraft] = useState({
-    from: "Новосибирск",
-    to: "Москва",
-    cargoType: "Сборный груз",
-    weight: "180",
+export default function HomePage() {
+  const [trackingNumber, setTrackingNumber] = useState("");
+  const [trackingResult, setTrackingResult] = useState<TrackingResult | null>(
+    null
+  );
+  const [isTracking, setIsTracking] = useState(false);
+
+  const [orderForm, setOrderForm] = useState({
+    from: "",
+    to: "",
+    weight: "",
+    description: "",
   });
+  const [isCreating, setIsCreating] = useState(false);
 
-  useEffect(() => {
-    const user = getStoredUser();
-    if (!user) return;
-
-    if (user.role === "DRIVER") {
-      setCabinetHref("/driver");
-      setCabinetLabel("Открыть кабинет водителя");
-      setCreateHref("/driver");
+  const handleTrack = async () => {
+    if (!trackingNumber.trim()) {
+      toast.error("Введите номер отслеживания");
       return;
     }
 
-    setCabinetHref("/dashboard");
-    setCabinetLabel("Открыть рабочий кабинет");
-    setCreateHref("/dashboard");
-  }, []);
+    const numericId = Number(trackingNumber.replace(/[^0-9]/g, ""));
+    setIsTracking(true);
 
-  const trackingResult = useMemo(
-    () =>
-      trackingSamples.find(
-        (item) => item.number.toLowerCase() === submittedTrack.trim().toLowerCase(),
-      ) || null,
-    [submittedTrack],
-  );
+    try {
+      if (!Number.isFinite(numericId) || numericId <= 0) {
+        throw new Error("Некорректный номер");
+      }
 
-  const createOrderSummary = `${newOrderDraft.from} → ${newOrderDraft.to} · ${newOrderDraft.cargoType} · ${newOrderDraft.weight} кг`;
+      const route = await publicTrackRoute(numericId);
+      const history: TrackingHistoryItem[] = (route.gpsLogs ?? [])
+        .slice(0, 5)
+        .map((log) => ({
+          date: formatDate(log.timestamp),
+          status: "GPS",
+          location: `${log.lat.toFixed(3)}, ${log.lon.toFixed(3)}`,
+        }));
+
+      setTrackingResult({
+        number: String(route.id ?? trackingNumber),
+        status: routeStatusLabel(route.status),
+        currentLocation:
+          route.endPoint?.address ?? route.startPoint?.address ?? "—",
+        estimatedDelivery: route.estimatedTime
+          ? `${Math.round(route.estimatedTime / 60)} мин в пути`
+          : "—",
+        history,
+      });
+      toast.success("Заказ найден");
+    } catch {
+      setTrackingResult(null);
+      toast.error("Заказ не найден или сервис недоступен");
+    } finally {
+      setIsTracking(false);
+    }
+  };
+
+  const handleCreateOrder = async () => {
+    if (!orderForm.from || !orderForm.to) {
+      toast.error("Заполните адреса отправителя и получателя");
+      return;
+    }
+    setIsCreating(true);
+    try {
+      const [fromGeo] = await publicGeocodeAddress(orderForm.from);
+      const [toGeo] = await publicGeocodeAddress(orderForm.to);
+      if (!fromGeo || !toGeo) {
+        throw new Error("Не удалось определить координаты");
+      }
+      const route = await publicCreateOrder({
+        startLat: fromGeo.lat,
+        startLon: fromGeo.lon,
+        startName: fromGeo.displayName,
+        startCity: fromGeo.city,
+        startAddress: fromGeo.address,
+        endLat: toGeo.lat,
+        endLon: toGeo.lon,
+        endName: toGeo.displayName,
+        endCity: toGeo.city,
+        endAddress: toGeo.address,
+      });
+      toast.success(`Заказ создан! Номер: ${route.id}`);
+      setOrderForm({ from: "", to: "", weight: "", description: "" });
+    } catch {
+      toast.error("Не удалось создать заказ. Проверьте, что backend запущен.");
+    } finally {
+      setIsCreating(false);
+    }
+  };
 
   return (
-    <main className="mx-auto w-full max-w-7xl px-4 py-5 md:px-6">
-      <header className="liquid-panel rounded-[34px] px-6 py-5 md:px-8">
-        <div className="flex flex-col gap-5 lg:flex-row lg:items-center lg:justify-between">
-          <div className="flex items-center gap-4">
-            <div className="grid h-14 w-14 place-items-center rounded-3xl bg-slate-900 text-white shadow-lg">
-              <Truck className="h-6 w-6" />
-            </div>
-            <div>
-              <p className="text-xs uppercase tracking-[0.32em] text-slate-400">
-                Adaptive Logistics Platform
-              </p>
-              <h1 className="mt-2 font-[Georgia] text-2xl text-slate-900 md:text-3xl">
-                Логистика, трекинг и оформление отправок в одном окне
-              </h1>
-            </div>
+    <div className="min-h-screen">
+      <section className="py-12 md:py-20">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+          <div className="text-center mb-12">
+            <h1 className="text-4xl md:text-5xl font-bold text-gray-900 mb-4">
+              Быстрая доставка по всей России
+            </h1>
+            <p className="text-xl text-gray-600">
+              Отслеживайте посылки в режиме реального времени
+            </p>
           </div>
 
-          <nav className="flex flex-wrap items-center gap-3 text-sm text-slate-500">
-            <a href="#tracking" className="rounded-full px-4 py-2 transition hover:bg-slate-100">
-              Отследить заказ
-            </a>
-            <a href="#services" className="rounded-full px-4 py-2 transition hover:bg-slate-100">
-              Услуги
-            </a>
-            <a href="#business" className="rounded-full px-4 py-2 transition hover:bg-slate-100">
-              Для бизнеса
-            </a>
-            <Link
-              href={cabinetHref}
-              className="inline-flex items-center gap-2 rounded-full bg-slate-900 px-5 py-3 font-semibold text-white"
-            >
-              {cabinetLabel}
-              <ArrowRight className="h-4 w-4" />
-            </Link>
-          </nav>
-        </div>
-      </header>
-
-      <section className="mt-5 grid gap-5 lg:grid-cols-[1.05fr_0.95fr]">
-        <article className="liquid-panel liquid-panel-hero rounded-[40px] p-7 md:p-10">
-          <div className="liquid-chip inline-flex items-center gap-2 rounded-full px-4 py-2 text-xs uppercase tracking-[0.28em] text-slate-500">
-            <ShieldCheck className="h-4 w-4" />
-            Логистический интерфейс в стиле коммерческих перевозчиков
-          </div>
-
-          <h2 className="mt-7 max-w-4xl font-[Georgia] text-4xl leading-[1.02] text-slate-900 md:text-6xl">
-            Введите номер заказа, проверьте статус или сразу оформите новую отправку.
-          </h2>
-
-          <p className="mt-6 max-w-3xl text-base leading-8 text-slate-600 md:text-lg">
-            Главная страница перестроена под привычный для транспортных компаний
-            сценарий: сначала трекинг, затем быстрое создание заказа, а ниже услуги,
-            направления, деловой блок и инфраструктура сети.
-          </p>
-
-          <div className="mt-8 flex flex-wrap gap-3">
-            <Link
-              href={createHref}
-              className="inline-flex items-center gap-2 rounded-full bg-slate-900 px-6 py-4 text-sm font-semibold text-white shadow-lg shadow-slate-300 transition hover:bg-slate-800"
-            >
-              Создать новый заказ
-              <Plus className="h-4 w-4" />
-            </Link>
-            <a
-              href="#tracking"
-              className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-6 py-4 text-sm font-medium text-slate-700 transition hover:border-slate-300"
-            >
-              Отследить отправление
-              <Search className="h-4 w-4" />
-            </a>
-          </div>
-
-          <div className="mt-10 grid gap-4 md:grid-cols-3">
-            {heroStats.map((item) => (
-              <StatCard key={item.value} value={item.value} label={item.label} />
-            ))}
-          </div>
-        </article>
-
-        <div className="grid gap-5">
-          <article
-            id="tracking"
-            className="liquid-panel rounded-[40px] p-7 md:p-8"
-          >
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <div>
-                <p className="text-xs uppercase tracking-[0.32em] text-slate-400">
-                  Трекинг заказа
-                </p>
-                <h3 className="mt-3 font-[Georgia] text-3xl text-slate-900">
-                  Проверка статуса по номеру
-                </h3>
-              </div>
-              <span className="liquid-chip rounded-full px-4 py-2 text-xs uppercase tracking-[0.2em] text-slate-500">
-                Demo tracking
-              </span>
-            </div>
-
-            <div className="mt-6 flex flex-col gap-3 sm:flex-row">
-              <input
-                value={trackDraft}
-                onChange={(event) => setTrackDraft(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter") {
-                    setSubmittedTrack(trackDraft);
-                  }
-                }}
-                placeholder="Номер заказа или накладной"
-                className="h-14 flex-1 rounded-2xl border border-slate-200 bg-slate-50 px-4 text-slate-900 outline-none transition focus:border-emerald-300 focus:bg-white"
-              />
-              <button
-                type="button"
-                onClick={() => setSubmittedTrack(trackDraft)}
-                className="inline-flex h-14 items-center justify-center gap-2 rounded-2xl bg-slate-900 px-5 text-sm font-semibold text-white transition hover:bg-slate-800"
-              >
-                <Search className="h-4 w-4" />
-                Проверить
-              </button>
-            </div>
-
-            <div className="mt-4 flex flex-wrap gap-2">
-              {trackingSamples.map((item) => (
-                <button
-                  key={item.number}
-                  type="button"
-                  onClick={() => {
-                    setTrackDraft(item.number);
-                    setSubmittedTrack(item.number);
-                  }}
-                  className="liquid-chip rounded-full px-3 py-2 text-xs font-medium text-slate-600 transition"
+          <Card className="max-w-2xl mx-auto mb-8 shadow-lg">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Search className="h-5 w-5 text-emerald-500" />
+                Отследить заказ
+              </CardTitle>
+              <CardDescription>
+                Введите номер отслеживания для проверки статуса доставки
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="flex gap-2">
+                <Input
+                  placeholder="Например: LG1234567"
+                  value={trackingNumber}
+                  onChange={(e) => setTrackingNumber(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && handleTrack()}
+                  className="flex-1"
+                />
+                <Button
+                  onClick={handleTrack}
+                  disabled={isTracking}
+                  className="bg-emerald-500 hover:bg-emerald-600"
                 >
-                  {item.number}
-                </button>
-              ))}
-            </div>
+                  {isTracking ? "Ищем..." : "Отследить"}
+                </Button>
+              </div>
 
-            {trackingResult ? (
-              <div className="liquid-card mt-6 rounded-[28px] p-5">
-                <div className="flex flex-wrap items-start justify-between gap-3">
-                  <div>
-                    <span className={`inline-flex rounded-full px-3 py-1 text-xs font-semibold ${statusTone(trackingResult.statusTone)}`}>
-                      {trackingResult.status}
-                    </span>
-                    <h4 className="mt-3 text-xl font-semibold text-slate-900">
-                      Заказ {trackingResult.number}
-                    </h4>
-                    <p className="mt-1 text-sm text-slate-500">{trackingResult.route}</p>
+              {trackingResult && (
+                <div className="mt-6 p-4 bg-emerald-50 rounded-lg border border-emerald-200">
+                  <div className="flex items-center justify-between mb-4">
+                    <div>
+                      <p className="text-sm text-gray-600">Номер заказа</p>
+                      <p className="font-semibold text-lg">
+                        {trackingResult.number}
+                      </p>
+                    </div>
+                    <div className="text-right">
+                      <p className="text-sm text-gray-600">Статус</p>
+                      <p className="font-semibold text-emerald-600">
+                        {trackingResult.status}
+                      </p>
+                    </div>
                   </div>
-                  <div className="text-right text-sm text-slate-500">
-                    <div>ETA</div>
-                    <strong className="mt-1 block text-base text-slate-900">
-                      {trackingResult.eta}
-                    </strong>
+
+                  <div className="space-y-3">
+                    {trackingResult.history.map((item, index) => (
+                      <div key={index} className="flex gap-3">
+                        <div className="flex flex-col items-center">
+                          <div
+                            className={`rounded-full p-1 ${
+                              index === trackingResult.history.length - 1
+                                ? "bg-emerald-500"
+                                : "bg-gray-300"
+                            }`}
+                          >
+                            {index === trackingResult.history.length - 1 ? (
+                              <Truck className="h-4 w-4 text-white" />
+                            ) : (
+                              <CheckCircle className="h-4 w-4 text-white" />
+                            )}
+                          </div>
+                          {index < trackingResult.history.length - 1 && (
+                            <div className="w-0.5 h-8 bg-gray-300" />
+                          )}
+                        </div>
+                        <div className="flex-1">
+                          <p className="font-medium">{item.status}</p>
+                          <p className="text-sm text-gray-600">
+                            {item.location}
+                          </p>
+                          <p className="text-xs text-gray-500">{item.date}</p>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+
+                  <div className="mt-4 pt-4 border-t border-emerald-200">
+                    <div className="flex items-center gap-2 text-sm">
+                      <Clock className="h-4 w-4 text-gray-600" />
+                      <span className="text-gray-600">Ожидаемая доставка:</span>
+                      <span className="font-semibold">
+                        {trackingResult.estimatedDelivery}
+                      </span>
+                    </div>
                   </div>
                 </div>
+              )}
+            </CardContent>
+          </Card>
 
-                <div className="mt-5 h-2 overflow-hidden rounded-full bg-slate-200">
-                  <div
-                    className="h-full rounded-full bg-emerald-500 transition-all"
-                    style={{ width: `${trackingResult.progress}%` }}
+          <Card className="max-w-2xl mx-auto shadow-lg">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Package className="h-5 w-5 text-emerald-500" />
+                Создать заказ
+              </CardTitle>
+              <CardDescription>
+                Оформите доставку быстро и удобно
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="grid md:grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <Label htmlFor="from" className="flex items-center gap-2">
+                    <MapPin className="h-4 w-4 text-emerald-500" />
+                    Откуда
+                  </Label>
+                  <Input
+                    id="from"
+                    placeholder="Город, адрес отправителя"
+                    value={orderForm.from}
+                    onChange={(e) =>
+                      setOrderForm({ ...orderForm, from: e.target.value })
+                    }
                   />
                 </div>
-
-                <div className="mt-5 grid gap-3 text-sm text-slate-600 sm:grid-cols-3">
-                  <InfoCell label="Услуга" value={trackingResult.service} />
-                  <InfoCell label="Груз" value={trackingResult.cargo} />
-                  <InfoCell label="Последнее событие" value={trackingResult.lastEvent} />
+                <div className="space-y-2">
+                  <Label htmlFor="to" className="flex items-center gap-2">
+                    <MapPin className="h-4 w-4 text-emerald-500" />
+                    Куда
+                  </Label>
+                  <Input
+                    id="to"
+                    placeholder="Город, адрес получателя"
+                    value={orderForm.to}
+                    onChange={(e) =>
+                      setOrderForm({ ...orderForm, to: e.target.value })
+                    }
+                  />
                 </div>
               </div>
-            ) : (
-              <div className="mt-6 rounded-[28px] border border-amber-200 bg-amber-50/80 p-5 text-sm leading-7 text-amber-900">
-                Номер не найден в демонстрационных данных. Для проверки интерфейса
-                используйте один из примеров выше.
+
+              <div className="space-y-2">
+                <Label htmlFor="weight">Вес (кг)</Label>
+                <Input
+                  id="weight"
+                  type="number"
+                  placeholder="Вес посылки"
+                  value={orderForm.weight}
+                  onChange={(e) =>
+                    setOrderForm({ ...orderForm, weight: e.target.value })
+                  }
+                />
               </div>
-            )}
-          </article>
 
-          <article className="liquid-panel-dark rounded-[40px] p-7 text-white md:p-8">
-            <p className="text-xs uppercase tracking-[0.32em] text-slate-400">
-              Новая отправка
-            </p>
-            <h3 className="mt-3 font-[Georgia] text-3xl">
-              Создать заказ за минуту
-            </h3>
-
-            <div className="mt-6 grid gap-3 sm:grid-cols-2">
-              <LandingInput
-                label="Откуда"
-                value={newOrderDraft.from}
-                onChange={(value) => setNewOrderDraft((current) => ({ ...current, from: value }))}
-              />
-              <LandingInput
-                label="Куда"
-                value={newOrderDraft.to}
-                onChange={(value) => setNewOrderDraft((current) => ({ ...current, to: value }))}
-              />
-              <LandingInput
-                label="Тип груза"
-                value={newOrderDraft.cargoType}
-                onChange={(value) => setNewOrderDraft((current) => ({ ...current, cargoType: value }))}
-              />
-              <LandingInput
-                label="Вес, кг"
-                value={newOrderDraft.weight}
-                onChange={(value) => setNewOrderDraft((current) => ({ ...current, weight: value }))}
-              />
-            </div>
-
-            <div className="liquid-card-dark mt-5 rounded-[26px] px-4 py-4">
-              <div className="text-xs uppercase tracking-[0.24em] text-slate-400">
-                Черновик отправки
+              <div className="space-y-2">
+                <Label htmlFor="description">Описание груза</Label>
+                <Textarea
+                  id="description"
+                  placeholder="Опишите содержимое посылки"
+                  value={orderForm.description}
+                  onChange={(e) =>
+                    setOrderForm({ ...orderForm, description: e.target.value })
+                  }
+                  rows={3}
+                />
               </div>
-              <div className="mt-2 text-sm leading-7 text-slate-200">{createOrderSummary}</div>
-            </div>
 
-            <button
-              type="button"
-              onClick={() => router.push(createHref)}
-              className="mt-6 inline-flex items-center gap-2 rounded-full bg-white px-5 py-4 text-sm font-semibold text-slate-900"
-            >
-              Перейти к оформлению
-              <ArrowRight className="h-4 w-4" />
-            </button>
-          </article>
-        </div>
-      </section>
-
-      <section
-        id="services"
-        className="liquid-panel mt-5 rounded-[40px] p-7 md:p-10"
-      >
-        <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
-          <div>
-            <p className="text-xs uppercase tracking-[0.32em] text-slate-400">
-              Популярные сценарии
-            </p>
-            <h3 className="mt-3 font-[Georgia] text-3xl text-slate-900 md:text-4xl">
-              Интерфейс собран как стартовая страница транспортной компании
-            </h3>
-          </div>
-          <div className="liquid-chip rounded-full px-4 py-2 text-sm text-slate-500">
-            Трекинг + оформление + деловой контур
-          </div>
-        </div>
-
-        <div className="mt-8 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-          {serviceCards.map(({ icon: Icon, title, text }) => (
-            <article
-              key={title}
-              className="liquid-card rounded-[30px] p-6"
-            >
-              <div className="mb-5 inline-flex rounded-2xl bg-slate-900 p-3 text-white">
-                <Icon className="h-5 w-5" />
-              </div>
-              <h4 className="text-lg font-semibold text-slate-900">{title}</h4>
-              <p className="mt-3 text-sm leading-7 text-slate-600">{text}</p>
-            </article>
-          ))}
-        </div>
-      </section>
-
-      <section className="mt-5 grid gap-5 lg:grid-cols-[1.02fr_0.98fr]">
-        <article
-          id="business"
-          className="liquid-panel rounded-[40px] p-7 md:p-10"
-        >
-          <p className="text-xs uppercase tracking-[0.32em] text-slate-400">
-            Для бизнеса
-          </p>
-          <h3 className="mt-3 font-[Georgia] text-3xl text-slate-900 md:text-4xl">
-            От поиска заказа до диспетчерской аналитики
-          </h3>
-
-          <div className="mt-8 space-y-4">
-            {businessFlow.map((item) => (
-              <div
-                key={item.step}
-                className="liquid-card rounded-[28px] p-5"
+              <Button
+                onClick={handleCreateOrder}
+                disabled={isCreating}
+                className="w-full bg-emerald-500 hover:bg-emerald-600"
               >
-                <div className="flex items-start gap-4">
-                  <div className="grid h-11 w-11 place-items-center rounded-2xl bg-slate-900 text-sm font-semibold text-white">
-                    {item.step}
-                  </div>
-                  <div>
-                    <h4 className="text-lg font-semibold text-slate-900">{item.title}</h4>
-                    <p className="mt-2 text-sm leading-7 text-slate-600">{item.text}</p>
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
-        </article>
-
-        <article className="liquid-panel-dark rounded-[40px] p-7 text-white md:p-10">
-          <p className="text-xs uppercase tracking-[0.32em] text-slate-400">
-            Сценарии доставки
-          </p>
-          <h3 className="mt-3 font-[Georgia] text-3xl md:text-4xl">
-            Паттерны, которые ожидает клиент логистического сервиса
-          </h3>
-
-          <div className="mt-8 grid gap-4">
-            {routeDirections.map((item) => (
-              <div
-                key={item.title}
-                className="liquid-card-dark rounded-[28px] p-5"
-              >
-                <div className="flex items-center justify-between gap-3">
-                  <h4 className="text-lg font-semibold">{item.title}</h4>
-                  <span className="rounded-full border border-white/10 bg-white/10 px-3 py-1 text-xs uppercase tracking-[0.2em] text-slate-300">
-                    {item.badge}
-                  </span>
-                </div>
-                <p className="mt-3 text-sm leading-7 text-slate-300">{item.text}</p>
-              </div>
-            ))}
-          </div>
-
-          <div className="mt-8 grid gap-3 sm:grid-cols-3">
-            <DarkMetric icon={<MapPinned className="h-4 w-4" />} text="Карта точек и маршрутов" />
-            <DarkMetric icon={<Clock3 className="h-4 w-4" />} text="ETA и статусные этапы" />
-            <DarkMetric icon={<Route className="h-4 w-4" />} text="Маршрутизация по дорогам" />
-          </div>
-        </article>
-      </section>
-
-      <section className="liquid-panel mt-5 rounded-[40px] p-7 md:p-10">
-        <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
-          <div>
-            <p className="text-xs uppercase tracking-[0.32em] text-slate-400">
-              Быстрый обзор
-            </p>
-            <h3 className="mt-3 font-[Georgia] text-3xl text-slate-900 md:text-4xl">
-              На стартовой видно и клиентский, и операционный слой
-            </h3>
-          </div>
-        </div>
-
-        <div className="mt-8 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-          <QuickCard
-            icon={<Search className="h-5 w-5" />}
-            title="Трекинг по номеру"
-            text="Главный CTA на первом экране, как у публичных сайтов доставки."
-          />
-          <QuickCard
-            icon={<Boxes className="h-5 w-5" />}
-            title="Оформление новой заявки"
-            text="Отдельный сценарий рядом с трекингом, без перегруза техническими полями."
-          />
-          <QuickCard
-            icon={<MapPinned className="h-5 w-5" />}
-            title="Сеть точек"
-            text="Склады, ПВЗ, магистральные этапы и last mile собраны в одну модель."
-          />
-          <QuickCard
-            icon={<Warehouse className="h-5 w-5" />}
-            title="Рабочий контур"
-            text="После входа доступен кабинет оператора, водителя и управление рейсами."
-          />
+                {isCreating ? "Создаём..." : "Оформить заказ"}
+              </Button>
+            </CardContent>
+          </Card>
         </div>
       </section>
-    </main>
-  );
-}
 
-function StatCard({ value, label }: { value: string; label: string }) {
-  return (
-    <div className="liquid-card rounded-[28px] px-5 py-6">
-      <strong className="block text-2xl text-slate-900">{value}</strong>
-      <span className="mt-2 block text-sm leading-6 text-slate-500">{label}</span>
+      <section className="py-16 bg-white">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+          <h2 className="text-3xl font-bold text-center mb-12">
+            Наши преимущества
+          </h2>
+          <div className="grid md:grid-cols-3 gap-8">
+            <div className="text-center">
+              <div className="bg-emerald-100 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4">
+                <Truck className="h-8 w-8 text-emerald-600" />
+              </div>
+              <h3 className="font-semibold text-lg mb-2">Быстрая доставка</h3>
+              <p className="text-gray-600">
+                Доставляем грузы по всей России в кратчайшие сроки
+              </p>
+            </div>
+            <div className="text-center">
+              <div className="bg-emerald-100 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4">
+                <MapPin className="h-8 w-8 text-emerald-600" />
+              </div>
+              <h3 className="font-semibold text-lg mb-2">Отслеживание 24/7</h3>
+              <p className="text-gray-600">
+                Следите за посылкой в режиме реального времени
+              </p>
+            </div>
+            <div className="text-center">
+              <div className="bg-emerald-100 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4">
+                <CheckCircle className="h-8 w-8 text-emerald-600" />
+              </div>
+              <h3 className="font-semibold text-lg mb-2">Гарантия качества</h3>
+              <p className="text-gray-600">
+                Бережная обработка и доставка ваших грузов
+              </p>
+            </div>
+          </div>
+        </div>
+      </section>
     </div>
   );
-}
-
-function InfoCell({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="liquid-card rounded-[20px] px-4 py-4">
-      <span className="block text-[11px] uppercase tracking-[0.22em] text-slate-400">
-        {label}
-      </span>
-      <strong className="mt-2 block text-sm leading-6 text-slate-900">{value}</strong>
-    </div>
-  );
-}
-
-function LandingInput({
-  label,
-  value,
-  onChange,
-}: {
-  label: string;
-  value: string;
-  onChange: (value: string) => void;
-}) {
-  return (
-    <label className="block">
-      <span className="mb-2 block text-xs uppercase tracking-[0.18em] text-slate-400">
-        {label}
-      </span>
-      <input
-        value={value}
-        onChange={(event) => onChange(event.target.value)}
-        className="h-12 w-full rounded-2xl border border-white/10 bg-white/8 px-4 text-white outline-none transition focus:border-emerald-300/60 focus:bg-white/10"
-      />
-    </label>
-  );
-}
-
-function QuickCard({
-  icon,
-  title,
-  text,
-}: {
-  icon: ReactNode;
-  title: string;
-  text: string;
-}) {
-  return (
-    <article className="liquid-card rounded-[30px] p-6">
-      <div className="mb-5 inline-flex rounded-2xl bg-slate-900 p-3 text-white">
-        {icon}
-      </div>
-      <h4 className="text-lg font-semibold text-slate-900">{title}</h4>
-      <p className="mt-3 text-sm leading-7 text-slate-600">{text}</p>
-    </article>
-  );
-}
-
-function DarkMetric({ icon, text }: { icon: ReactNode; text: string }) {
-  return (
-    <div className="liquid-card-dark flex items-center gap-3 rounded-[22px] px-4 py-4 text-sm text-slate-200">
-      <div className="rounded-2xl bg-white/10 p-2.5 text-white">{icon}</div>
-      <span>{text}</span>
-    </div>
-  );
-}
-
-function statusTone(tone: "emerald" | "amber" | "sky") {
-  if (tone === "emerald") {
-    return "bg-emerald-100 text-emerald-700";
-  }
-  if (tone === "sky") {
-    return "bg-sky-100 text-sky-700";
-  }
-  return "bg-amber-100 text-amber-700";
 }
