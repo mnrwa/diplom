@@ -17,6 +17,7 @@ model User {
   createdAt     DateTime      @default(now())
   routesCreated Route[]       @relation("RouteDispatcher")
   driverProfile DriverProfile?
+  marketplaceOrders MarketplaceOrder[]
 }
 
 enum Role {
@@ -33,6 +34,7 @@ model DriverProfile {
   licenseCategory String       @default("C")
   experienceYears Int          @default(3)
   rating          Float        @default(4.7)
+  telematicsScore Float?
   status          DriverStatus @default(ON_SHIFT)
   shiftStartedAt  DateTime     @default(now())
   notes           String?
@@ -43,6 +45,7 @@ model DriverProfile {
   vehicle         Vehicle?     @relation(fields: [vehicleId], references: [id])
   routes          Route[]      @relation("RouteDriver")
   newsItems       DriverNews[]
+  bids            MarketplaceBid[]
 }
 
 enum DriverStatus {
@@ -57,10 +60,13 @@ model Vehicle {
   model         String
   status        VehicleStatus @default(IDLE)
   driverName    String?
+  mileageKm     Float         @default(0)
+  lastServiceKm Float         @default(0)
   createdAt     DateTime      @default(now())
   routes        Route[]
   gpsLogs       GpsLog[]
   driverProfile DriverProfile?
+  maintenanceRecords MaintenanceRecord[]
 }
 
 enum VehicleStatus {
@@ -70,20 +76,22 @@ enum VehicleStatus {
 }
 
 model LocationPoint {
-  id        Int               @id @default(autoincrement())
-  name      String
-  code      String            @unique
-  type      LocationPointType
-  city      String
-  address   String
-  lat       Float
-  lon       Float
-  notes     String?
-  createdAt DateTime          @default(now())
-  updatedAt DateTime          @updatedAt
-  routesFrom Route[]          @relation("RouteStartPoint")
-  routesTo   Route[]          @relation("RouteEndPoint")
-  newsItems  DriverNews[]
+  id             Int               @id @default(autoincrement())
+  name           String
+  code           String            @unique
+  type           LocationPointType
+  city           String
+  address        String
+  lat            Float
+  lon            Float
+  notes          String?
+  geofenceRadius Float             @default(0.5)
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+  routesFrom     Route[]           @relation("RouteStartPoint")
+  routesTo       Route[]           @relation("RouteEndPoint")
+  newsItems      DriverNews[]
+  multistopStops MultistopStop[]
 }
 
 enum LocationPointType {
@@ -92,32 +100,36 @@ enum LocationPointType {
 }
 
 model Route {
-  id            Int           @id @default(autoincrement())
-  name          String
-  status        RouteStatus   @default(PLANNED)
-  startLat      Float
-  startLon      Float
-  endLat        Float
-  endLon        Float
-  waypoints     Json?
-  distance      Float?
-  estimatedTime Int?
-  riskScore     Float?
-  riskFactors   Json?
-  createdAt     DateTime      @default(now())
-  updatedAt     DateTime      @updatedAt
-  vehicle       Vehicle?      @relation(fields: [vehicleId], references: [id])
-  vehicleId     Int?
-  dispatcher    User?         @relation("RouteDispatcher", fields: [dispatcherId], references: [id])
-  dispatcherId  Int?
-  driver        DriverProfile? @relation("RouteDriver", fields: [driverId], references: [id])
-  driverId      Int?
-  startPoint    LocationPoint? @relation("RouteStartPoint", fields: [startPointId], references: [id])
-  startPointId  Int?
-  endPoint      LocationPoint? @relation("RouteEndPoint", fields: [endPointId], references: [id])
-  endPointId    Int?
-  gpsLogs       GpsLog[]
-  newsItems     DriverNews[]
+  id             Int           @id @default(autoincrement())
+  name           String
+  status         RouteStatus   @default(PLANNED)
+  startLat       Float
+  startLon       Float
+  endLat         Float
+  endLon         Float
+  waypoints      Json?
+  distance       Float?
+  estimatedTime  Int?
+  mlEta          Int?
+  riskScore      Float?
+  riskFactors    Json?
+  telegramChatId String?
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+  vehicle        Vehicle?      @relation(fields: [vehicleId], references: [id])
+  vehicleId      Int?
+  dispatcher     User?         @relation("RouteDispatcher", fields: [dispatcherId], references: [id])
+  dispatcherId   Int?
+  driver         DriverProfile? @relation("RouteDriver", fields: [driverId], references: [id])
+  driverId       Int?
+  startPoint     LocationPoint? @relation("RouteStartPoint", fields: [startPointId], references: [id])
+  startPointId   Int?
+  endPoint       LocationPoint? @relation("RouteEndPoint", fields: [endPointId], references: [id])
+  endPointId     Int?
+  gpsLogs        GpsLog[]
+  newsItems      DriverNews[]
+  waybill        Waybill?
+  geofenceEvents GeofenceEvent[]
 }
 
 enum RouteStatus {
@@ -126,6 +138,33 @@ enum RouteStatus {
   COMPLETED
   CANCELLED
   RECALCULATING
+}
+
+model MultistopRoute {
+  id            Int             @id @default(autoincrement())
+  name          String
+  status        RouteStatus     @default(PLANNED)
+  totalDistance Float?
+  estimatedTime Int?
+  riskScore     Float?
+  vehicleId     Int?
+  driverId      Int?
+  dispatcherId  Int?
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @updatedAt
+  stops         MultistopStop[]
+}
+
+model MultistopStop {
+  id              Int            @id @default(autoincrement())
+  multistopRouteId Int
+  locationPointId Int
+  stopOrder       Int
+  status          String         @default("PENDING")
+  arrivedAt       DateTime?
+  departedAt      DateTime?
+  multistopRoute  MultistopRoute @relation(fields: [multistopRouteId], references: [id])
+  locationPoint   LocationPoint  @relation(fields: [locationPointId], references: [id])
 }
 
 model GpsLog {
@@ -138,6 +177,17 @@ model GpsLog {
   vehicleId Int
   route     Route?   @relation(fields: [routeId], references: [id])
   routeId   Int?
+}
+
+model GeofenceEvent {
+  id              Int           @id @default(autoincrement())
+  routeId         Int
+  locationPointId Int
+  eventType       String
+  lat             Float
+  lon             Float
+  timestamp       DateTime      @default(now())
+  route           Route         @relation(fields: [routeId], references: [id])
 }
 
 model RiskEvent {
@@ -186,4 +236,78 @@ enum NewsSource {
   VK
   MAX
   INTERNAL
+}
+
+model Waybill {
+  id            Int      @id @default(autoincrement())
+  routeId       Int      @unique
+  driverName    String
+  vehiclePlate  String
+  cargoDesc     String?
+  signatureData String?
+  checkpoints   Json?
+  status        String   @default("DRAFT")
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  route         Route    @relation(fields: [routeId], references: [id])
+}
+
+model MaintenanceRecord {
+  id          Int       @id @default(autoincrement())
+  vehicleId   Int
+  type        String
+  mileageKm   Float
+  scheduledAt DateTime?
+  doneAt      DateTime?
+  notes       String?
+  createdAt   DateTime  @default(now())
+  vehicle     Vehicle   @relation(fields: [vehicleId], references: [id])
+}
+
+model MarketplaceOrder {
+  id           Int              @id @default(autoincrement())
+  title        String
+  description  String?
+  startAddress String
+  endAddress   String
+  startLat     Float
+  startLon     Float
+  endLat       Float
+  endLon       Float
+  startCity    String
+  endCity      String
+  budget       Float?
+  status       MarketplaceStatus @default(OPEN)
+  createdById  Int
+  acceptedBidId Int?
+  createdAt    DateTime         @default(now())
+  updatedAt    DateTime         @updatedAt
+  createdBy    User             @relation(fields: [createdById], references: [id])
+  bids         MarketplaceBid[]
+}
+
+enum MarketplaceStatus {
+  OPEN
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+}
+
+model MarketplaceBid {
+  id            Int              @id @default(autoincrement())
+  orderId       Int
+  driverId      Int
+  proposedPrice Float?
+  estimatedTime Int?
+  message       String?
+  status        BidStatus        @default(PENDING)
+  createdAt     DateTime         @default(now())
+  order         MarketplaceOrder @relation(fields: [orderId], references: [id])
+  driver        DriverProfile    @relation(fields: [driverId], references: [id])
+}
+
+enum BidStatus {
+  PENDING
+  ACCEPTED
+  REJECTED
 }

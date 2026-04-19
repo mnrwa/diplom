@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertTriangle,
+  Bot,
   CheckCircle,
   Loader2,
   LogOut,
@@ -13,10 +14,12 @@ import {
   Package,
   Plus,
   Route as RouteIcon,
+  ShoppingBag,
   Users,
   Warehouse,
   Wifi,
   WifiOff,
+  Wrench,
 } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
@@ -48,8 +51,13 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import { DriverSelector } from "@/components/maps/DriverSelector";
 import MapView from "@/components/map/MapView";
+import { HeatmapToggle } from "@/components/dashboard/HeatmapToggle";
+import { AutoAssignButton } from "@/components/dashboard/AutoAssignModal";
+import { MultistopForm } from "@/components/dashboard/MultistopForm";
+import { MaintenancePanel } from "@/components/dashboard/MaintenancePanel";
 import { useWebSocket } from "@/hooks/useWebSocket";
 import {
+  autoAssignRoute,
   createDriverAccount,
   createLocation,
   createRoute,
@@ -60,6 +68,7 @@ import {
   getRoutes,
   getVehicles,
   type GeocodeResult,
+  type HeatmapCell,
   type LocationPoint,
 } from "@/lib/api";
 import { clearSession, getStoredUser } from "@/lib/session";
@@ -131,6 +140,7 @@ export default function DashboardPage() {
   const [ready, setReady] = useState(false);
   const [userName, setUserName] = useState("Диспетчер");
   const [selectedDriver, setSelectedDriver] = useState<string | null>(null);
+  const [heatmapData, setHeatmapData] = useState<HeatmapCell[] | null>(null);
 
   // Driver form
   const [driverMessage, setDriverMessage] = useState("");
@@ -476,10 +486,12 @@ export default function DashboardPage() {
         <Tabs defaultValue="overview" className="space-y-6">
           <Card className="shadow-sm">
             <CardContent className="p-2">
-              <TabsList className="grid grid-cols-4 w-full">
+              <TabsList className="grid grid-cols-6 w-full">
                 <TabsTrigger value="overview">Обзор</TabsTrigger>
                 <TabsTrigger value="drivers">Водители</TabsTrigger>
                 <TabsTrigger value="routes">Маршруты</TabsTrigger>
+                <TabsTrigger value="multistop">Мультистоп</TabsTrigger>
+                <TabsTrigger value="maintenance">ТО</TabsTrigger>
                 <TabsTrigger value="locations">Сеть</TabsTrigger>
               </TabsList>
             </CardContent>
@@ -499,11 +511,14 @@ export default function DashboardPage() {
                     </CardDescription>
                   </CardHeader>
                   <CardContent className="space-y-4">
-                    <DriverSelector
-                      drivers={driverSelectorData}
-                      selectedDriver={selectedDriver}
-                      onSelectDriver={setSelectedDriver}
-                    />
+                    <div className="flex items-center justify-between">
+                      <DriverSelector
+                        drivers={driverSelectorData}
+                        selectedDriver={selectedDriver}
+                        onSelectDriver={setSelectedDriver}
+                      />
+                      <HeatmapToggle onData={setHeatmapData} />
+                    </div>
                     {(() => {
                       const points: Array<{
                         id: string;
@@ -1150,6 +1165,15 @@ export default function DashboardPage() {
                                 : "—"}
                             </span>
                           </div>
+                          {!route.driver && (
+                            <div className="mt-2">
+                              <AutoAssignButton
+                                routeId={route.id}
+                                routeName={route.name}
+                                onSuccess={() => queryClient.invalidateQueries({ queryKey: ["routes"] })}
+                              />
+                            </div>
+                          )}
                         </div>
                       </div>
                     </CardContent>
@@ -1395,6 +1419,33 @@ export default function DashboardPage() {
               </div>
             </div>
           </TabsContent>
+          <TabsContent value="multistop" className="space-y-6">
+            <div className="grid md:grid-cols-2 gap-6">
+              <MultistopForm locations={locations} />
+              <Card className="shadow-lg">
+                <CardHeader>
+                  <CardTitle className="text-base flex items-center gap-2">
+                    <RouteIcon className="h-4 w-4 text-purple-500" />
+                    Как работает TSP
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-3 text-sm text-gray-600">
+                  <p>Алгоритм <strong>Greedy Nearest Neighbor</strong> находит оптимальный порядок объезда точек:</p>
+                  <ol className="list-decimal list-inside space-y-1">
+                    <li>Начинаем со склада (точка A)</li>
+                    <li>На каждом шаге выбираем ближайшую ещё не посещённую точку</li>
+                    <li>Итог — оптимизированный маршрут без лишних км</li>
+                  </ol>
+                  <p className="text-xs text-gray-400 mt-2">Экономия пробега до 20% по сравнению с произвольным порядком.</p>
+                </CardContent>
+              </Card>
+            </div>
+          </TabsContent>
+
+          <TabsContent value="maintenance" className="space-y-6">
+            <MaintenancePanel />
+          </TabsContent>
+
         </Tabs>
       </div>
     </div>

@@ -3,8 +3,8 @@
   "version": "1.0.0",
   "scripts": {
     "postinstall": "prisma generate",
-    "prestart:dev": "prisma db push --skip-generate",
-    "prestart": "prisma db push --skip-generate",
+    "prestart:dev": "prisma db push",
+    "prestart": "prisma db push",
     "start:dev": "nest start --watch",
     "start": "node dist/main",
     "build": "nest build",

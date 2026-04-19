@@ -11,6 +11,9 @@ import { DriversModule } from './drivers/drivers.module';
 import { LocationsModule } from './locations/locations.module';
 import { DemoDataService } from './demo/demo-data.service';
 import { PublicModule } from './public/public.module';
+import { WaybillModule } from './waybill/waybill.module';
+import { MarketplaceModule } from './marketplace/marketplace.module';
+import { TelegramModule } from './telegram/telegram.module';
 
 @Module({
   imports: [
@@ -25,6 +28,9 @@ import { PublicModule } from './public/public.module';
     DriversModule,
     LocationsModule,
     PublicModule,
+    WaybillModule,
+    MarketplaceModule,
+    TelegramModule,
   ],
   providers: [DemoDataService],
 })

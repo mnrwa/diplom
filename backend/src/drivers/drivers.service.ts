@@ -200,6 +200,61 @@ export class DriversService {
     };
   }
 
+  async getTelematics(driverId: number) {
+    const profile = await this.prisma.driverProfile.findUnique({
+      where: { id: driverId },
+      include: { vehicle: { include: { gpsLogs: { orderBy: { timestamp: 'asc' }, take: 1000 } } } },
+    });
+    if (!profile) throw new NotFoundException('Водитель не найден');
+
+    const logs = profile.vehicle?.gpsLogs ?? [];
+    if (logs.length < 2) {
+      return { driverId, score: 100, events: [], totalPoints: 0, speedViolations: 0, harshBraking: 0, harshAcceleration: 0 };
+    }
+
+    const SPEED_LIMIT = 110;
+    const HARSH_THRESHOLD = 15;
+    let speedViolations = 0;
+    let harshBraking = 0;
+    let harshAcceleration = 0;
+    const events: Array<{ type: string; lat: number; lon: number; timestamp: string; value: number }> = [];
+
+    for (let i = 1; i < logs.length; i++) {
+      const prev = logs[i - 1];
+      const curr = logs[i];
+      const currSpeed = curr.speed ?? 0;
+      const prevSpeed = prev.speed ?? 0;
+      const dt = (new Date(curr.timestamp).getTime() - new Date(prev.timestamp).getTime()) / 1000;
+
+      if (currSpeed > SPEED_LIMIT) {
+        speedViolations++;
+        if (events.length < 20) events.push({ type: 'SPEEDING', lat: curr.lat, lon: curr.lon, timestamp: curr.timestamp.toISOString(), value: currSpeed });
+      }
+
+      if (dt > 0 && dt < 30) {
+        const dvKmh = prevSpeed - currSpeed;
+        if (dvKmh > HARSH_THRESHOLD) {
+          harshBraking++;
+          if (events.length < 20) events.push({ type: 'HARSH_BRAKING', lat: curr.lat, lon: curr.lon, timestamp: curr.timestamp.toISOString(), value: dvKmh });
+        }
+        if (currSpeed - prevSpeed > HARSH_THRESHOLD) {
+          harshAcceleration++;
+          if (events.length < 20) events.push({ type: 'HARSH_ACCELERATION', lat: curr.lat, lon: curr.lon, timestamp: curr.timestamp.toISOString(), value: currSpeed - prevSpeed });
+        }
+      }
+    }
+
+    const penalty = Math.min(100, speedViolations * 3 + harshBraking * 5 + harshAcceleration * 3);
+    const score = Math.max(0, 100 - penalty);
+
+    await this.prisma.driverProfile.update({
+      where: { id: driverId },
+      data: { telematicsScore: score },
+    });
+
+    return { driverId, score, events, totalPoints: logs.length, speedViolations, harshBraking, harshAcceleration };
+  }
+
   private serializeDriver(profile: any) {
     const latestPosition = profile.vehicle?.gpsLogs?.[0]
       ? {

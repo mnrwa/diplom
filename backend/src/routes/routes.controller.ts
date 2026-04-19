@@ -32,6 +32,10 @@ export class CreateRouteDto {
   @IsOptional()
   @IsInt()
   driverId?: number;
+
+  @IsOptional()
+  @IsString()
+  telegramChatId?: string;
 }
 
 export class CreateQuickRouteDto {
@@ -76,6 +80,10 @@ export class CreateQuickRouteDto {
   @IsOptional()
   @IsInt()
   driverId?: number;
+
+  @IsOptional()
+  @IsString()
+  telegramChatId?: string;
 }
 
 @ApiTags('routes')
@@ -107,12 +115,45 @@ export class RoutesController {
   }
 
   @Post('quick')
-  @ApiOperation({ summary: 'Создать маршрут напрямую по координатам (точки создаются автоматически)' })
+  @ApiOperation({ summary: 'Создать маршрут по координатам' })
   createQuick(
     @Body() dto: CreateQuickRouteDto,
     @Req() req: { user: { id: number } },
   ) {
     return this.routes.createQuick(dto, req.user.id);
+  }
+
+  @Post('multistop')
+  @ApiOperation({ summary: 'Мультистоп маршрут (TSP оптимизация)' })
+  createMultistop(
+    @Body() body: { name: string; startPointId: number; stopIds: number[]; vehicleId?: number; driverId?: number },
+    @Req() req: { user: { id: number } },
+  ) {
+    return this.routes.createMultistop(body, req.user.id);
+  }
+
+  @Get('multistop/list')
+  @ApiOperation({ summary: 'Список мультистоп маршрутов' })
+  listMultistop() {
+    return this.routes.listMultistop();
+  }
+
+  @Post(':id/auto-assign')
+  @ApiOperation({ summary: 'Авто-назначение лучшего водителя на маршрут' })
+  autoAssign(@Param('id', ParseIntPipe) id: number) {
+    return this.routes.autoAssign(id);
+  }
+
+  @Get(':id/eta')
+  @ApiOperation({ summary: 'ML-предсказание ETA маршрута' })
+  getMlEta(@Param('id', ParseIntPipe) id: number) {
+    return this.routes.getMlEta(id);
+  }
+
+  @Get(':id/twin')
+  @ApiOperation({ summary: 'Digital Twin — данные для воспроизведения маршрута' })
+  getDigitalTwin(@Param('id', ParseIntPipe) id: number) {
+    return this.routes.getDigitalTwin(id);
   }
 
   @Patch(':id/status')

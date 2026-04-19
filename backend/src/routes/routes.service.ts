@@ -855,6 +855,205 @@ export class RoutesService {
     });
   }
 
+  async autoAssign(routeId: number) {
+    const route = await this.prisma.route.findUnique({
+      where: { id: routeId },
+      include: { startPoint: true },
+    });
+    if (!route) throw new NotFoundException('Маршрут не найден');
+
+    const candidates = await this.prisma.driverProfile.findMany({
+      where: { status: 'ON_SHIFT' },
+      include: {
+        user: true,
+        vehicle: { include: { gpsLogs: { orderBy: { timestamp: 'desc' }, take: 1 } } },
+        routes: { where: { status: { in: ['ACTIVE', 'PLANNED'] } }, take: 1 },
+      },
+    });
+
+    const available = candidates.filter((d) => d.routes.length === 0 && d.vehicle);
+
+    if (!available.length) {
+      return { ok: false, reason: 'no_available_drivers', suggestions: [] };
+    }
+
+    const scored = available.map((driver) => {
+      const gps = driver.vehicle?.gpsLogs?.[0];
+      let distScore = 0;
+      if (gps && route.startPoint) {
+        const dist = calculateDistanceKm(
+          { lat: gps.lat, lon: gps.lon },
+          { lat: route.startPoint.lat, lon: route.startPoint.lon },
+        );
+        distScore = Math.max(0, 1 - dist / 500);
+      }
+      const ratingScore = (driver.rating ?? 4.7) / 5;
+      const expScore = Math.min(1, (driver.experienceYears ?? 3) / 10);
+      const telemScore = driver.telematicsScore != null ? driver.telematicsScore / 100 : 0.7;
+      const total = distScore * 0.35 + ratingScore * 0.30 + expScore * 0.20 + telemScore * 0.15;
+
+      return {
+        driverId: driver.id,
+        name: driver.user.name,
+        rating: driver.rating,
+        experienceYears: driver.experienceYears,
+        vehicleId: driver.vehicle?.id,
+        vehiclePlate: driver.vehicle?.plateNumber,
+        score: Number(total.toFixed(3)),
+        distanceToStart: gps && route.startPoint
+          ? Number(calculateDistanceKm({ lat: gps.lat, lon: gps.lon }, { lat: route.startPoint.lat, lon: route.startPoint.lon }).toFixed(1))
+          : null,
+      };
+    }).sort((a, b) => b.score - a.score);
+
+    const best = scored[0];
+    await this.prisma.route.update({
+      where: { id: routeId },
+      data: {
+        driverId: best.driverId,
+        vehicleId: best.vehicleId ?? undefined,
+        status: 'ACTIVE',
+      },
+    });
+
+    return { ok: true, assigned: best, suggestions: scored.slice(0, 3) };
+  }
+
+  async createMultistop(
+    data: { name: string; startPointId: number; stopIds: number[]; vehicleId?: number; driverId?: number },
+    dispatcherId?: number,
+  ) {
+    const allIds = [data.startPointId, ...data.stopIds];
+    const points = await this.prisma.locationPoint.findMany({ where: { id: { in: allIds } } });
+
+    const pointMap = new Map(points.map((p) => [p.id, p]));
+    const start = pointMap.get(data.startPointId);
+    if (!start) throw new NotFoundException('Стартовая точка не найдена');
+
+    const remainingIds = [...data.stopIds];
+    const orderedIds: number[] = [];
+    let current = start;
+
+    while (remainingIds.length > 0) {
+      let nearestIdx = 0;
+      let nearestDist = Infinity;
+      for (let i = 0; i < remainingIds.length; i++) {
+        const p = pointMap.get(remainingIds[i]);
+        if (!p) continue;
+        const d = calculateDistanceKm(current, p);
+        if (d < nearestDist) { nearestDist = d; nearestIdx = i; }
+      }
+      orderedIds.push(remainingIds[nearestIdx]);
+      current = pointMap.get(remainingIds[nearestIdx])!;
+      remainingIds.splice(nearestIdx, 1);
+    }
+
+    let totalDist = 0;
+    let prev = start;
+    for (const sid of orderedIds) {
+      const p = pointMap.get(sid)!;
+      totalDist += calculateDistanceKm(prev, p);
+      prev = p;
+    }
+    const estimatedTimeMin = Math.round((totalDist / 58) * 60);
+
+    const multistop = await this.prisma.multistopRoute.create({
+      data: {
+        name: data.name,
+        totalDistance: Number(totalDist.toFixed(1)),
+        estimatedTime: estimatedTimeMin,
+        vehicleId: data.vehicleId,
+        driverId: data.driverId,
+        dispatcherId,
+        stops: {
+          create: orderedIds.map((id, idx) => ({
+            locationPointId: id,
+            stopOrder: idx + 1,
+          })),
+        },
+      },
+      include: { stops: { include: { locationPoint: true }, orderBy: { stopOrder: 'asc' } } },
+    });
+
+    return multistop;
+  }
+
+  async listMultistop() {
+    return this.prisma.multistopRoute.findMany({
+      include: { stops: { include: { locationPoint: true }, orderBy: { stopOrder: 'asc' } } },
+      orderBy: { updatedAt: 'desc' },
+    });
+  }
+
+  async getMlEta(routeId: number) {
+    const route = await this.prisma.route.findUnique({
+      where: { id: routeId },
+      include: { startPoint: true, endPoint: true },
+    });
+    if (!route) throw new NotFoundException('Маршрут не найден');
+
+    try {
+      const res = await firstValueFrom(
+        this.http.post(`${this.aiUrl}/eta-predict`, {
+          distance_km: route.distance ?? 100,
+          hour_of_day: new Date().getHours(),
+          day_of_week: new Date().getDay(),
+          weather_score: (route.riskFactors as any)?.weather ?? 0.2,
+          news_score: (route.riskFactors as any)?.news ?? 0.2,
+          risk_score: route.riskScore ?? 0.3,
+        }, { timeout: 5000 }),
+      );
+
+      const mlEta = res.data?.predicted_minutes ?? route.estimatedTime;
+
+      await this.prisma.route.update({ where: { id: routeId }, data: { mlEta } });
+
+      return {
+        routeId,
+        staticEta: route.estimatedTime,
+        mlEta,
+        confidence: res.data?.confidence ?? 0.7,
+        factors: res.data?.factors ?? {},
+      };
+    } catch {
+      return {
+        routeId,
+        staticEta: route.estimatedTime,
+        mlEta: route.estimatedTime,
+        confidence: 0.5,
+        factors: { fallback: true },
+      };
+    }
+  }
+
+  async getDigitalTwin(routeId: number) {
+    const route = await this.prisma.route.findUnique({
+      where: { id: routeId },
+      include: {
+        startPoint: true,
+        endPoint: true,
+        gpsLogs: { orderBy: { timestamp: 'asc' }, take: 500 },
+      },
+    });
+    if (!route) throw new NotFoundException('Маршрут не найден');
+
+    const waypoints = Array.isArray(route.waypoints) ? route.waypoints : [];
+
+    return {
+      routeId,
+      name: route.name,
+      status: route.status,
+      startPoint: route.startPoint,
+      endPoint: route.endPoint,
+      waypoints,
+      track: route.gpsLogs,
+      estimatedTime: route.estimatedTime,
+      mlEta: route.mlEta,
+      distance: route.distance,
+      riskScore: route.riskScore,
+    };
+  }
+
   private normalizeDriverNewsSource(item: any) {
     const url = String(item?.url ?? '').toLowerCase();
     const channel = String(item?.channel ?? '').toLowerCase();

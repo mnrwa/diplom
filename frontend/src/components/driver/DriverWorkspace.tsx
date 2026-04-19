@@ -3,6 +3,13 @@
 import MapView, { type MapLine, type MapPoint } from "@/components/map/MapView";
 import type { DriverDetail } from "@/lib/api";
 import { useGpsEmitter } from "@/hooks/useGpsEmitter";
+import { VoiceAlerts } from "@/components/driver/VoiceAlerts";
+import { WaybillCard } from "@/components/driver/WaybillModal";
+import { TelematicsCard } from "@/components/driver/TelematicsCard";
+import { useQuery } from "@tanstack/react-query";
+import { getDigitalTwin } from "@/lib/api";
+import { DigitalTwinPlayer } from "@/components/driver/DigitalTwin";
+import { useOfflineGps } from "@/hooks/useOfflineGps";
 import {
   ArrowLeft,
   BadgeAlert,
@@ -107,6 +114,19 @@ export default function DriverWorkspace({
 
   const visibleNews = driver.newsFeed;
 
+  const voiceAlerts = visibleNews
+    .filter((n) => n.severity >= 0.5)
+    .map((n) => `Внимание! ${n.title}. ${n.summary}`);
+
+  const offlineGps = useOfflineGps(mode === "driver" ? (vehicleId ?? null) : null);
+
+  const { data: digitalTwin } = useQuery({
+    queryKey: ["twin", driver.activeRoute?.id],
+    queryFn: () => getDigitalTwin(driver.activeRoute!.id),
+    enabled: !!driver.activeRoute?.id,
+    staleTime: 30_000,
+  });
+
   return (
     <main className="mx-auto w-full max-w-7xl px-4 py-5 md:px-6">
       <section className="rounded-[28px] border border-sand bg-white px-6 py-6 md:px-8">
@@ -196,6 +216,20 @@ export default function DriverWorkspace({
               )}
             </div>
           </div>
+
+          {mode === "driver" && offlineGps.bufferSize > 0 && (
+            <div className="mt-3 flex items-center gap-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-2 text-sm">
+              <span className="text-amber-700">📡 Оффлайн-буфер: {offlineGps.bufferSize} точек</span>
+              <button onClick={offlineGps.syncNow} className="text-amber-600 underline text-xs">Синхронизировать</button>
+            </div>
+          )}
+
+          {mode === "driver" && voiceAlerts.length > 0 && (
+            <div className="mt-4 flex items-center gap-3">
+              <VoiceAlerts alerts={voiceAlerts} />
+              <span className="text-xs text-amber-600">{voiceAlerts.length} предупреждений по маршруту</span>
+            </div>
+          )}
 
           {!vehicleId && (
             <p className="mt-3 text-xs text-amber-700">
@@ -299,6 +333,25 @@ export default function DriverWorkspace({
             )}
           </Panel>
         </div>
+      </section>
+
+      {/* Digital Twin */}
+      {digitalTwin && (
+        <section className="mt-4">
+          <DigitalTwinPlayer twin={digitalTwin} />
+        </section>
+      )}
+
+      {/* Waybill */}
+      {driver.activeRoute && (
+        <section className="mt-4">
+          <WaybillCard routeId={driver.activeRoute.id} />
+        </section>
+      )}
+
+      {/* Telematics */}
+      <section className="mt-4">
+        <TelematicsCard driverId={driver.id} />
       </section>
 
       <section className="mt-4 rounded-[28px] border border-sand bg-white p-6">

@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from routers import risk, weather, news
+from routers import risk, weather, news, eta
 from services.news_pipeline import create_news_collector, get_news_collector, set_news_collector
 
 app = FastAPI(
@@ -19,6 +19,7 @@ app.add_middleware(
 app.include_router(risk.router)
 app.include_router(weather.router)
 app.include_router(news.router)
+app.include_router(eta.router)
 
 
 @app.on_event("startup")

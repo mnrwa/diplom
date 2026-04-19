@@ -34,4 +34,19 @@ export class VehiclesController {
   @Delete(':id')
   @ApiOperation({ summary: 'Удалить ТС' })
   delete(@Param('id', ParseIntPipe) id: number) { return this.vehicles.delete(id); }
+
+  @Get(':id/maintenance')
+  @ApiOperation({ summary: 'Предиктивное ТО для ТС' })
+  getMaintenance(@Param('id', ParseIntPipe) id: number) {
+    return this.vehicles.getMaintenance(id);
+  }
+
+  @Post(':id/maintenance')
+  @ApiOperation({ summary: 'Записать факт ТО' })
+  logMaintenance(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() body: { type: string; notes?: string },
+  ) {
+    return this.vehicles.logMaintenance(id, body);
+  }
 }

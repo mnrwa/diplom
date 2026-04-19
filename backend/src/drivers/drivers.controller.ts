@@ -81,4 +81,10 @@ export class DriversController {
   create(@Body() dto: CreateDriverDto) {
     return this.drivers.create(dto);
   }
+
+  @Get(':id/telematics')
+  @ApiOperation({ summary: 'Телематический рейтинг водителя (анализ GPS)' })
+  telematics(@Param('id', ParseIntPipe) id: number) {
+    return this.drivers.getTelematics(id);
+  }
 }
