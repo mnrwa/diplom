@@ -1,10 +1,6 @@
 {
-  "/_not-found/page": "app/_not-found/page.js",
-  "/driver/page": "app/driver/page.js",
   "/login/page": "app/login/page.js",
-  "/lk/page": "app/lk/page.js",
-  "/customer/page": "app/customer/page.js",
   "/dashboard/drivers/[id]/page": "app/dashboard/drivers/[id]/page.js",
   "/page": "app/page.js",
-  "/dashboard/page": "app/dashboard/page.js"
+  "/lk/page": "app/lk/page.js"
 }
