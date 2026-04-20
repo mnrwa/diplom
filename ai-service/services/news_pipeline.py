@@ -320,9 +320,12 @@ def clean_text(value: str | None) -> str:
     if not value:
         return ""
     raw_value = str(value).strip()
-    if re.match(r"^[a-z][a-z0-9+.-]*://", raw_value, flags=re.IGNORECASE):
-        return raw_value
+    # If the entire value is a bare URL, return empty — URLs are not readable content
+    if re.match(r"^[a-z][a-z0-9+.-]*://\S*$", raw_value, flags=re.IGNORECASE):
+        return ""
     text = BeautifulSoup(raw_value, "html.parser").get_text(" ", strip=True)
+    # Strip inline URLs from mixed text
+    text = re.sub(r"https?://\S+", "", text)
     text = re.sub(r"\s+", " ", text)
     return text.strip()
 

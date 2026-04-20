@@ -1,0 +1,20 @@
+{
+  "features": [
+    "distance_km",
+    "hour_of_day",
+    "day_of_week",
+    "weather_score",
+    "news_score",
+    "risk_score",
+    "is_rush_hour",
+    "is_night",
+    "is_weekend",
+    "dist_log",
+    "weather_x_rush"
+  ],
+  "mae_min": 192.89,
+  "rmse_min": 460.88,
+  "mape_pct": 25.45,
+  "n_train": 68000,
+  "n_test": 12000
+}
