@@ -27,6 +27,7 @@ services:
       DATABASE_URL: postgresql://logistics:logistics123@postgres:5432/logistics_db
       JWT_SECRET: super_secret_jwt_key_change_in_prod
       AI_SERVICE_URL: http://ai-service:8000
+      PRISMA_ACCEPT_DATA_LOSS: "true"
       PORT: 3001
     depends_on:
       postgres:

@@ -4,50 +4,27 @@
 
 @layer base {
   :root {
-    --background: 0 0% 100%;
-    --foreground: 240 10% 3.9%;
+    --background: 38 20% 97%;
+    --foreground: 30 8% 10%;
     --card: 0 0% 100%;
-    --card-foreground: 240 10% 3.9%;
+    --card-foreground: 30 8% 10%;
     --popover: 0 0% 100%;
-    --popover-foreground: 240 10% 3.9%;
-    --primary: 160 84% 39%;
+    --popover-foreground: 30 8% 10%;
+    --primary: 160 91% 30%;
     --primary-foreground: 0 0% 100%;
-    --secondary: 240 4.8% 95.9%;
-    --secondary-foreground: 240 5.9% 10%;
-    --muted: 240 4.8% 95.9%;
-    --muted-foreground: 240 3.8% 46.1%;
-    --accent: 240 4.8% 95.9%;
-    --accent-foreground: 240 5.9% 10%;
-    --destructive: 0 84.2% 60.2%;
+    --secondary: 35 18% 93%;
+    --secondary-foreground: 30 8% 22%;
+    --muted: 35 14% 92%;
+    --muted-foreground: 30 8% 52%;
+    --accent: 35 14% 92%;
+    --accent-foreground: 30 8% 22%;
+    --destructive: 9 74% 52%;
     --destructive-foreground: 0 0% 98%;
-    --border: 240 5.9% 90%;
-    --input: 240 5.9% 90%;
+    --border: 34 20% 86%;
+    --input: 34 20% 86%;
     --input-background: 0 0% 100%;
-    --ring: 160 84% 39%;
-    --radius: 0.625rem;
-  }
-
-  .dark {
-    --background: 240 10% 3.9%;
-    --foreground: 0 0% 98%;
-    --card: 240 10% 3.9%;
-    --card-foreground: 0 0% 98%;
-    --popover: 240 10% 3.9%;
-    --popover-foreground: 0 0% 98%;
-    --primary: 160 84% 39%;
-    --primary-foreground: 0 0% 100%;
-    --secondary: 240 3.7% 15.9%;
-    --secondary-foreground: 0 0% 98%;
-    --muted: 240 3.7% 15.9%;
-    --muted-foreground: 240 5% 64.9%;
-    --accent: 240 3.7% 15.9%;
-    --accent-foreground: 0 0% 98%;
-    --destructive: 0 62.8% 30.6%;
-    --destructive-foreground: 0 0% 98%;
-    --border: 240 3.7% 15.9%;
-    --input: 240 3.7% 15.9%;
-    --input-background: 240 3.7% 15.9%;
-    --ring: 160 84% 39%;
+    --ring: 160 91% 30%;
+    --radius: 0.75rem;
   }
 }
 
@@ -55,53 +32,60 @@
   * {
     @apply border-border;
   }
+
+  html {
+    background-color: #FAF9F6;
+    scroll-behavior: smooth;
+  }
+
   body {
     @apply bg-background text-foreground;
     font-family:
-      -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen-Sans,
-      Ubuntu, Cantarell, "Helvetica Neue", sans-serif;
+      "Inter",
+      -apple-system,
+      BlinkMacSystemFont,
+      "Segoe UI",
+      Roboto,
+      "Helvetica Neue",
+      Arial,
+      sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
   }
 }
 
-html {
-  scroll-behavior: smooth;
-}
-
+/* Scrollbar */
 ::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
+  width: 6px;
+  height: 6px;
 }
 ::-webkit-scrollbar-thumb {
   border-radius: 999px;
-  background: hsl(var(--border));
+  background: #D0C9BF;
 }
 ::-webkit-scrollbar-track {
-  background: hsl(var(--muted));
-}
-
-/* Light "liquid glass" background + subtle grain (matte "krupe") */
-html {
-  background:
-    radial-gradient(1200px 700px at 12% -10%, rgba(16, 60, 37, 0.14) 0%, transparent 58%),
-    radial-gradient(900px 600px at 92% 0%, rgba(31, 169, 122, 0.12) 0%, transparent 62%),
-    radial-gradient(760px 520px at 60% 112%, rgba(59, 130, 246, 0.12) 0%, transparent 60%),
-    linear-gradient(180deg, #FAF6EF 0%, #F6F7FB 55%, #FAF6EF 100%);
-}
-
-html::before {
-  content: "";
-  position: fixed;
-  inset: 0;
-  pointer-events: none;
-  background-image: radial-gradient(circle, rgba(15, 23, 42, 0.05) 1px, transparent 1px);
-  background-size: 4px 4px;
-  opacity: 0.22;
-  mix-blend-mode: multiply;
-  z-index: 0;
-}
-
-body {
-  position: relative;
-  z-index: 1;
   background: transparent;
+}
+
+/* Selection */
+::selection {
+  background: #D1FAE5;
+  color: #065F46;
+}
+
+/* Focus ring */
+:focus-visible {
+  outline: 2px solid #059669;
+  outline-offset: 2px;
+}
+
+/* Number inputs - hide spinners */
+input[type="number"]::-webkit-inner-spin-button,
+input[type="number"]::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+input[type="number"] {
+  -moz-appearance: textfield;
 }
