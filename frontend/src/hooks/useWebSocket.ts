@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { io, Socket } from 'socket.io-client';
 
 const WS_URL = process.env.NEXT_PUBLIC_WS_URL || 'http://localhost:3001';
@@ -19,10 +19,22 @@ export interface RiskAlert {
   timestamp: string;
 }
 
+export interface ChatMessage {
+  id: string;
+  senderId: number;
+  senderName: string;
+  role: 'DISPATCHER' | 'DRIVER';
+  targetDriverId?: number | null;
+  routeId?: number | null;
+  text: string;
+  timestamp: string;
+}
+
 export function useWebSocket() {
   const socketRef = useRef<Socket | null>(null);
   const [positions, setPositions] = useState<Record<number, VehiclePosition>>({});
   const [alerts, setAlerts] = useState<RiskAlert[]>([]);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [connected, setConnected] = useState(false);
 
   useEffect(() => {
@@ -40,8 +52,18 @@ export function useWebSocket() {
       setAlerts(prev => [alert, ...prev].slice(0, 20));
     });
 
+    socket.on('chat_message', (msg: ChatMessage) => {
+      setMessages(prev => [...prev, msg].slice(-100));
+    });
+
     return () => { socket.disconnect(); };
   }, []);
 
-  return { positions, alerts, connected };
+  const sendChatMessage = useCallback((
+    payload: { senderId: number; senderName: string; role: 'DISPATCHER' | 'DRIVER'; targetDriverId?: number | null; routeId?: number | null; text: string }
+  ) => {
+    socketRef.current?.emit('chat_message', payload);
+  }, []);
+
+  return { positions, alerts, messages, connected, sendChatMessage };
 }

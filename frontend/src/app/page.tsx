@@ -3,11 +3,13 @@
 import { useState } from "react";
 import {
   CheckCircle,
+  CheckCircle2,
   Clock,
   MapPin,
   Package,
   Search,
   Truck,
+  Zap,
 } from "lucide-react";
 import { toast } from "@/lib/sonner";
 
@@ -83,6 +85,25 @@ export default function HomePage() {
     description: "",
   });
   const [isCreating, setIsCreating] = useState(false);
+
+  const MOCK_TRACKING: TrackingResult = {
+    number: "VLT-2026-00042",
+    status: "В пути",
+    currentLocation: "Московская обл., Ногинский р-н",
+    estimatedDelivery: "Сегодня до 18:00",
+    history: [
+      { date: "20 апр, 09:15", status: "Принят в обработку", location: "Москва, склад №1 (Южный)" },
+      { date: "20 апр, 11:40", status: "Передан водителю", location: "Москва, склад №1 — водитель Алексей К." },
+      { date: "20 апр, 13:20", status: "Выехал на доставку", location: "Москва, МКАД 15-й км" },
+      { date: "20 апр, 14:55", status: "В пути", location: "Московская обл., Ногинский р-н" },
+    ],
+  };
+
+  const handleDemoTrack = () => {
+    setTrackingNumber("VLT-2026-00042");
+    setTrackingResult(MOCK_TRACKING);
+    toast.success("Демо-заказ загружен", { description: "Это тестовые данные для демонстрации трекинга" });
+  };
 
   const handleTrack = async () => {
     if (!trackingNumber.trim()) {
@@ -185,7 +206,7 @@ export default function HomePage() {
             <CardContent>
               <div className="flex gap-2">
                 <Input
-                  placeholder="Например: LG1234567"
+                  placeholder="Например: VLT-2026-00042"
                   value={trackingNumber}
                   onChange={(e) => setTrackingNumber(e.target.value)}
                   onKeyDown={(e) => e.key === "Enter" && handleTrack()}
@@ -198,65 +219,67 @@ export default function HomePage() {
                 >
                   {isTracking ? "Ищем..." : "Отследить"}
                 </Button>
+                <Button
+                  variant="outline"
+                  onClick={handleDemoTrack}
+                  className="gap-1.5 border-emerald-200 text-emerald-700 hover:bg-emerald-50"
+                >
+                  <Zap className="h-3.5 w-3.5" />
+                  Демо
+                </Button>
               </div>
 
               {trackingResult && (
-                <div className="mt-6 p-4 bg-emerald-50 rounded-lg border border-emerald-200">
-                  <div className="flex items-center justify-between mb-4">
+                <div className="mt-6 rounded-2xl border border-slate-200 bg-white shadow-sm overflow-hidden">
+                  {/* header */}
+                  <div className="flex items-center justify-between bg-gradient-to-r from-emerald-500 to-teal-500 px-5 py-4 text-white">
                     <div>
-                      <p className="text-sm text-gray-600">Номер заказа</p>
-                      <p className="font-semibold text-lg">
-                        {trackingResult.number}
-                      </p>
+                      <p className="text-xs uppercase tracking-widest opacity-80">Номер заказа</p>
+                      <p className="mt-0.5 text-lg font-bold tracking-wide">{trackingResult.number}</p>
                     </div>
                     <div className="text-right">
-                      <p className="text-sm text-gray-600">Статус</p>
-                      <p className="font-semibold text-emerald-600">
+                      <p className="text-xs uppercase tracking-widest opacity-80">Статус</p>
+                      <span className="mt-0.5 inline-flex items-center gap-1.5 rounded-full bg-white/20 px-3 py-1 text-sm font-semibold">
+                        <Truck className="h-3.5 w-3.5" />
                         {trackingResult.status}
-                      </p>
-                    </div>
-                  </div>
-
-                  <div className="space-y-3">
-                    {trackingResult.history.map((item, index) => (
-                      <div key={index} className="flex gap-3">
-                        <div className="flex flex-col items-center">
-                          <div
-                            className={`rounded-full p-1 ${
-                              index === trackingResult.history.length - 1
-                                ? "bg-emerald-500"
-                                : "bg-gray-300"
-                            }`}
-                          >
-                            {index === trackingResult.history.length - 1 ? (
-                              <Truck className="h-4 w-4 text-white" />
-                            ) : (
-                              <CheckCircle className="h-4 w-4 text-white" />
-                            )}
-                          </div>
-                          {index < trackingResult.history.length - 1 && (
-                            <div className="w-0.5 h-8 bg-gray-300" />
-                          )}
-                        </div>
-                        <div className="flex-1">
-                          <p className="font-medium">{item.status}</p>
-                          <p className="text-sm text-gray-600">
-                            {item.location}
-                          </p>
-                          <p className="text-xs text-gray-500">{item.date}</p>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-
-                  <div className="mt-4 pt-4 border-t border-emerald-200">
-                    <div className="flex items-center gap-2 text-sm">
-                      <Clock className="h-4 w-4 text-gray-600" />
-                      <span className="text-gray-600">Ожидаемая доставка:</span>
-                      <span className="font-semibold">
-                        {trackingResult.estimatedDelivery}
                       </span>
                     </div>
+                  </div>
+
+                  {/* ETA bar */}
+                  <div className="flex items-center gap-2 border-b border-slate-100 bg-emerald-50 px-5 py-3 text-sm">
+                    <Clock className="h-4 w-4 text-emerald-600" />
+                    <span className="text-slate-600">Ожидаемая доставка:</span>
+                    <span className="font-semibold text-emerald-700">{trackingResult.estimatedDelivery}</span>
+                  </div>
+
+                  {/* timeline */}
+                  <div className="px-5 py-4 space-y-0">
+                    {trackingResult.history.map((item, index) => {
+                      const isLast = index === trackingResult.history.length - 1;
+                      return (
+                        <div key={index} className="flex gap-4">
+                          <div className="flex flex-col items-center">
+                            <div className={`flex h-8 w-8 items-center justify-center rounded-full border-2 ${isLast ? "border-emerald-500 bg-emerald-500" : "border-slate-200 bg-white"}`}>
+                              {isLast
+                                ? <Truck className="h-4 w-4 text-white" />
+                                : <CheckCircle2 className="h-4 w-4 text-slate-300" />}
+                            </div>
+                            {index < trackingResult.history.length - 1 && (
+                              <div className="w-0.5 flex-1 bg-slate-100 my-1" style={{ minHeight: 20 }} />
+                            )}
+                          </div>
+                          <div className="flex-1 pb-4">
+                            <p className={`text-sm font-semibold ${isLast ? "text-emerald-700" : "text-slate-700"}`}>{item.status}</p>
+                            <div className="mt-0.5 flex items-center gap-1.5 text-xs text-slate-500">
+                              <MapPin className="h-3 w-3" />
+                              {item.location}
+                            </div>
+                            <p className="mt-0.5 text-xs text-slate-400">{item.date}</p>
+                          </div>
+                        </div>
+                      );
+                    })}
                   </div>
                 </div>
               )}

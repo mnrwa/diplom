@@ -1,102 +1,103 @@
 # Adaptive Logistics Platform
 
-Дипломный проект: **адаптивная система оптимизации грузоперевозок с ИИ**.
+Платформа для управления грузоперевозками с веб-интерфейсом, backend API и AI-сервисом оценки рисков маршрута.
 
-## Структура
+## Стек
+
+- `frontend/` — Next.js 14, React 18, Tailwind CSS
+- `backend/` — NestJS 10, Prisma, PostgreSQL
+- `ai-service/` — FastAPI, scikit-learn, pandas, Playwright
+- инфраструктура — Docker Compose
+
+## Структура проекта
 
 ```text
 logistics-platform/
-├── backend/      # NestJS API + Prisma
-├── frontend/     # Next.js интерфейс
-├── ai-service/   # FastAPI сервис для risk/weather/news
-├── scripts/      # локальные dev-скрипты
-└── package.json  # root pnpm workspace
+├── backend/
+├── frontend/
+├── ai-service/
+├── docker-compose.yml
+├── package.json
+└── pnpm-workspace.yaml
 ```
 
-## Локальный запуск без Docker
+## Запуск через Docker
 
-### 1. Установить зависимости
+### 1. Подготовить переменные окружения
+
+При необходимости создайте `.env` в корне проекта на основе `.env.example`.
+
+### 2. Собрать и запустить все сервисы
 
 ```bash
-pnpm install
+docker compose up --build
 ```
 
-Если вы запускаете команды из PowerShell и видите ошибку вида
-`PSSecurityException ... выполнение сценариев отключено`, используйте:
+Для запуска в фоне:
 
 ```bash
-pnpm.cmd install
+docker compose up -d --build
 ```
 
-### 2. Запустить весь проект
+### 3. Остановить проект
 
 ```bash
-pnpm run dev
+docker compose down
 ```
 
-Что делает root `dev`:
+Для остановки с удалением томов:
 
-- поднимает локальный PostgreSQL в `.local/postgres-data`
-- создаёт базу `logistics_db`
-- запускает `ai-service` в `.local/ai-venv`
-- запускает `backend` в watch mode
-- запускает `frontend` в Next.js dev mode
+```bash
+docker compose down -v
+```
 
-## Доступ
+## Доступ к сервисам
 
 - Frontend: `http://localhost:3000`
 - Backend API: `http://localhost:3001`
 - Swagger: `http://localhost:3001/api`
 - AI service: `http://localhost:8000`
 - AI docs: `http://localhost:8000/docs`
+- PostgreSQL: `localhost:5432`
 
-## AI news collector
+## Параметры PostgreSQL
 
-- AI-сервис теперь поднимает фоновый news collector при старте и складывает сигналы в `ai-service/data/news_cache.sqlite3`
-- поддерживаются источники `local_export`, `rss`, `html` и `browser_html`
-- в `news_sources.json` можно включать `route_search_rss`: такой источник не хранит фиксированный список сайтов, а сам ищет свежие региональные новости по населённым пунктам вдоль маршрута
-- для маршрута `A -> B -> промежуточные точки` AI:
-  - берёт известные города из маршрута
-  - определяет дополнительные населённые пункты по координатам через reverse geocoding
-  - делает интернет-поиск свежих новостей по этим локациям
-  - забирает публикации региональных сайтов и учитывает их в `news-risks/route`
-- маршрутизатор AI оценивает релевантность новостей маршруту `A -> B -> промежуточные точки` и возвращает `total_risk` + `risks`
-- служебные ручки:
-  - `GET http://localhost:8000/news-collector/status`
-  - `POST http://localhost:8000/news-collector/refresh`
-  - `GET http://localhost:8000/news-feed`
-  - `POST http://localhost:8000/news-risks/route`
-- быстрый CLI-тест без запуска FastAPI:
-  - `python ai-service/scripts/route_news_cli.py --from "Иркутск" --to "Улан-Удэ"`
-- переменные route discovery:
-  - `NEWS_ROUTE_DISCOVERY_FRESH_SECONDS`
-  - `NEWS_ROUTE_LOCALITIES_LIMIT`
-  - `NEWS_ROUTE_GEOCODE_POINTS`
-- для динамических сайтов со скроллом после `pip install -r ai-service/requirements.txt` один раз выполните:
-  - `python -m playwright install chromium`
+- database: `logistics_db`
+- user: `logistics`
+- password: `logistics123`
+
+## Docker Compose сервисы
+
+- `postgres` — основная база данных PostgreSQL 16
+- `backend` — NestJS API, подключается к `postgres` и `ai-service`
+- `ai-service` — FastAPI сервис оценки риска, ETA и новостных сигналов
+- `frontend` — Next.js клиент
 
 ## Полезные команды
 
+Просмотр логов:
+
 ```bash
-pnpm run dev:db
-pnpm run dev:db:status
-pnpm run dev:db:stop
-pnpm run dev:ai
+docker compose logs -f
 ```
 
-## Требования
+Логи конкретного сервиса:
 
-- `pnpm` 10+
-- Python 3.14+ или совместимый
-- локальные PostgreSQL binaries:
-  - либо в `PATH`
-  - либо в `D:\postgres\bin`
-  - либо в `C:\Program Files\PostgreSQL\16\bin`
+```bash
+docker compose logs -f backend
+docker compose logs -f frontend
+docker compose logs -f ai-service
+docker compose logs -f postgres
+```
+
+Пересборка одного сервиса:
+
+```bash
+docker compose up --build backend
+```
 
 ## Примечания
 
-- `backend/.env` и `frontend/.env.local` уже настроены под локальный запуск.
-- Для полного 2GIS-режима с кликабельными зданиями и POI добавьте `NEXT_PUBLIC_2GIS_KEY` в `frontend/.env.local`.
-- Для AI используются актуальные Python-пакеты, совместимые с локальным Python 3.14.
-- Маршруты теперь строятся по дорожной сети через OSRM и при создании/пересчёте учитывают длину пути, ETA, дорожные события, news-risk и погодный риск.
-- Docker больше не нужен для стандартной разработки проекта.
+- Основная база проекта хранится в PostgreSQL.
+- AI news cache дополнительно хранится в `ai-service/data/news_cache.sqlite3`.
+- Backend внутри Docker использует `DATABASE_URL`, указывающий на контейнер `postgres`.

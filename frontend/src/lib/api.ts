@@ -138,6 +138,9 @@ export type RouteSummary = {
   riskScore?: number | null;
   riskFactors?: Record<string, any> | null;
   telegramChatId?: string | null;
+  trackingToken?: string | null;
+  fuelCostRub?: number | null;
+  createdAt?: string;
   vehicle?: Vehicle | null;
   driver?: { id: number; user?: SessionUser | null } | null;
   newsItems?: DriverNewsItem[];
@@ -158,9 +161,28 @@ export type RiskEvent = {
 export type HeatmapCell = {
   lat: number;
   lon: number;
-  count: number;
-  avgSpeed: number;
+  count?: number;
+  avgSpeed?: number;
   intensity: number;
+  load_label?: string;
+  highway?: string;
+  avg_speed_kmh?: number;
+};
+
+export type AiEtaResult = {
+  predicted_minutes: number;
+  confidence: number;
+  source: string;
+  model_mae_min?: number | null;
+  factors: {
+    base_speed_kmh: number;
+    adjusted_speed_kmh: number;
+    tod_factor: number;
+    dow_factor: number;
+    weather_factor: number;
+    news_factor: number;
+    risk_factor: number;
+  };
 };
 
 export type AutoAssignResult = {
@@ -415,6 +437,54 @@ export const getHeatmap = () =>
 // AI
 export const getRiskEvents = () =>
   api.get<RiskEvent[]>("/ai/risk-events").then((r) => r.data);
+
+const AI_URL = process.env.NEXT_PUBLIC_AI_URL ?? "http://localhost:8000";
+
+export const getAiHeatmap = () =>
+  fetch(`${AI_URL}/ai/heatmap`).then((r) => r.json()) as Promise<HeatmapCell[]>;
+
+export const getAiEta = (params: {
+  distance_km: number;
+  weather_score?: number;
+  risk_score?: number;
+}) =>
+  fetch(`${AI_URL}/eta-predict`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      distance_km: params.distance_km,
+      hour_of_day: new Date().getHours(),
+      day_of_week: new Date().getDay(),
+      weather_score: params.weather_score ?? 0.1,
+      news_score: 0.1,
+      risk_score: params.risk_score ?? 0.2,
+    }),
+  }).then((r) => r.json()) as Promise<AiEtaResult>;
+
+export const getAiWeather = (lat: number, lon: number) =>
+  fetch(`${AI_URL}/weather?lat=${lat}&lon=${lon}`).then((r) => r.json());
+
+export type ForecastDay = {
+  date: string;
+  day_name: string;
+  predicted_routes: number;
+  predicted_drivers_needed: number;
+  load_level: "low" | "medium" | "high";
+};
+
+export type ForecastResult = {
+  forecast: ForecastDay[];
+  avg_daily_routes: number;
+  peak_day: string;
+  recommendation: string;
+};
+
+export const getAiForecast = (history: { date: string; count: number }[], horizonDays = 7) =>
+  fetch(`${AI_URL}/forecast/load`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ history, horizon_days: horizonDays }),
+  }).then((r) => r.json()) as Promise<ForecastResult>;
 
 // Geocode
 export type GeocodeResult = {

@@ -44,9 +44,12 @@ export type MapSelection = {
   label?: string;
 };
 
+import type { HeatmapCell } from "@/lib/api";
+
 type MapViewProps = {
   lines?: MapLine[];
   points?: MapPoint[];
+  heatmapCells?: HeatmapCell[] | null;
   center?: [number, number];
   className?: string;
   selectable?: boolean;
@@ -86,6 +89,7 @@ type FallbackRuntime = {
   // Track logical line ids (MapLine.id). Source/layer ids are derived from it.
   lineIds: Set<string>;
   selectionMarker: MapLibreMarker | null;
+  hasCluster: boolean;
 };
 
 type Runtime = DgisRuntime | FallbackRuntime;
@@ -97,6 +101,7 @@ const FALLBACK_STYLE = "https://basemaps.cartocdn.com/gl/positron-gl-style/style
 export default function MapView({
   lines = [],
   points = [],
+  heatmapCells = null,
   center,
   className = "h-[420px] w-full rounded-[28px]",
   selectable = false,
@@ -379,6 +384,12 @@ export default function MapView({
 
   useEffect(() => {
     const runtime = runtimeRef.current;
+    if (!runtime || !ready || runtime.kind !== "fallback") return;
+    syncFallbackHeatmap(runtime, heatmapCells);
+  }, [heatmapCells, ready]);
+
+  useEffect(() => {
+    const runtime = runtimeRef.current;
     if (!runtime || !ready || !fitToData || !boundsPayload.length) return;
 
     // Avoid refitting on every GPS tick: refit only when the set of objects changes.
@@ -533,6 +544,7 @@ function initFallbackMap(
     markers: new Map(),
     lineIds: new Set(),
     selectionMarker: null,
+    hasCluster: false,
   };
 }
 
@@ -762,6 +774,71 @@ function syncFallbackMarkers(
       element,
     });
   });
+
+  syncFallbackCluster(runtime, points);
+}
+
+function syncFallbackCluster(runtime: FallbackRuntime, points: MapPoint[]) {
+  const map = runtime.map;
+  const features = points.map((p) => ({
+    type: "Feature" as const,
+    geometry: { type: "Point" as const, coordinates: [p.longitude, p.latitude] },
+    properties: { id: p.id, kind: p.kind },
+  }));
+  const geojson = { type: "FeatureCollection" as const, features };
+
+  const src = map.getSource(CLUSTER_SOURCE) as maplibregl.GeoJSONSource | undefined;
+  if (src?.setData) {
+    src.setData(geojson as any);
+    return;
+  }
+
+  try {
+    map.addSource(CLUSTER_SOURCE, {
+      type: "geojson",
+      data: geojson as any,
+      cluster: true,
+      clusterMaxZoom: 10,
+      clusterRadius: 60,
+    });
+
+    map.addLayer({
+      id: CLUSTER_LAYER,
+      type: "circle",
+      source: CLUSTER_SOURCE,
+      filter: ["has", "point_count"],
+      paint: {
+        "circle-color": [
+          "step", ["get", "point_count"],
+          "#6366f1", 10, "#7c3aed", 50, "#581c87",
+        ],
+        "circle-radius": [
+          "step", ["get", "point_count"],
+          20, 10, 28, 50, 36,
+        ],
+        "circle-stroke-width": 3,
+        "circle-stroke-color": "#ffffff",
+        "circle-opacity": 0.9,
+      },
+    });
+
+    map.addLayer({
+      id: CLUSTER_COUNT_LAYER,
+      type: "symbol",
+      source: CLUSTER_SOURCE,
+      filter: ["has", "point_count"],
+      layout: {
+        "text-field": "{point_count_abbreviated}",
+        "text-size": 13,
+        "text-font": ["Open Sans Regular", "Arial Unicode MS Regular"],
+      },
+      paint: { "text-color": "#ffffff" },
+    });
+
+    runtime.hasCluster = true;
+  } catch (e) {
+    if (!isAlreadyExistsError(e)) throw e;
+  }
 }
 
 function syncDgisSelectionMarker(
@@ -861,6 +938,14 @@ function clearRuntimeObjects(runtime: Runtime) {
   runtime.lineIds.forEach((lineId) => removeRouteLine(runtime, lineId));
   cleanupOrphanRouteArtifacts(runtime, new Set());
 
+  if (runtime.hasCluster) {
+    [CLUSTER_COUNT_LAYER, CLUSTER_LAYER].forEach((id) => {
+      try { if (runtime.map.getLayer(id)) runtime.map.removeLayer(id); } catch { /* ok */ }
+    });
+    try { if (runtime.map.getSource(CLUSTER_SOURCE)) runtime.map.removeSource(CLUSTER_SOURCE); } catch { /* ok */ }
+    runtime.hasCluster = false;
+  }
+
   runtime.markers.clear();
   runtime.lineIds.clear();
   runtime.selectionMarker = null;
@@ -946,6 +1031,105 @@ function removeRouteLine(runtime: FallbackRuntime, lineId: string) {
   }
 }
 
+const CLUSTER_SOURCE       = "velto-cluster-source";
+const CLUSTER_LAYER        = "velto-cluster-circles";
+const CLUSTER_COUNT_LAYER  = "velto-cluster-counts";
+
+const ROUTE_LOAD_SOURCE = "velto-route-load-source";
+const ROUTE_LOAD_LAYER  = "velto-route-load-layer";
+const ROUTE_LOAD_LAYER2 = "velto-route-load-layer-outline";
+
+function intensityToColor(intensity: number): string {
+  if (intensity < 0.25) return "#22c55e";  // green — free
+  if (intensity < 0.50) return "#eab308";  // yellow — moderate
+  if (intensity < 0.75) return "#f97316";  // orange — heavy
+  return "#ef4444";                         // red — jams
+}
+
+function syncFallbackHeatmap(runtime: FallbackRuntime, cells: HeatmapCell[] | null | undefined) {
+  const map = runtime.map;
+  if (!map.isStyleLoaded()) {
+    map.once("style.load", () => syncFallbackHeatmap(runtime, cells));
+    return;
+  }
+
+  // Cleanup
+  const cleanup = () => {
+    [ROUTE_LOAD_LAYER, ROUTE_LOAD_LAYER2].forEach((id) => {
+      try { if (map.getLayer(id)) map.removeLayer(id); } catch { /* ok */ }
+    });
+    try { if (map.getSource(ROUTE_LOAD_SOURCE)) map.removeSource(ROUTE_LOAD_SOURCE); } catch { /* ok */ }
+  };
+
+  if (!cells || cells.length === 0) { cleanup(); return; }
+
+  // Group points by highway, build LineString segments coloured by intensity
+  const byHighway = new Map<string, HeatmapCell[]>();
+  for (const c of cells) {
+    const key = c.highway ?? "unknown";
+    if (!byHighway.has(key)) byHighway.set(key, []);
+    byHighway.get(key)!.push(c);
+  }
+
+  const features: any[] = [];
+  for (const [highway, pts] of byHighway) {
+    // Draw segment-by-segment so each piece gets its own color
+    for (let i = 0; i < pts.length - 1; i++) {
+      const a = pts[i];
+      const b = pts[i + 1];
+      const avgIntensity = (a.intensity + b.intensity) / 2;
+      features.push({
+        type: "Feature",
+        geometry: {
+          type: "LineString",
+          coordinates: [[a.lon, a.lat], [b.lon, b.lat]],
+        },
+        properties: {
+          intensity: avgIntensity,
+          color: intensityToColor(avgIntensity),
+          highway,
+          load_label: a.load_label ?? "",
+          avg_speed: a.avg_speed_kmh ?? 70,
+        },
+      });
+    }
+  }
+
+  const geojson = { type: "FeatureCollection", features };
+
+  cleanup();
+
+  try {
+    map.addSource(ROUTE_LOAD_SOURCE, { type: "geojson", data: geojson as any });
+
+    // Outline (wider, darker)
+    map.addLayer({
+      id: ROUTE_LOAD_LAYER2,
+      type: "line",
+      source: ROUTE_LOAD_SOURCE,
+      layout: { "line-cap": "round", "line-join": "round" },
+      paint: {
+        "line-color": ["get", "color"],
+        "line-width": 6,
+        "line-opacity": 0.25,
+      },
+    });
+
+    // Main line
+    map.addLayer({
+      id: ROUTE_LOAD_LAYER,
+      type: "line",
+      source: ROUTE_LOAD_SOURCE,
+      layout: { "line-cap": "round", "line-join": "round" },
+      paint: {
+        "line-color": ["get", "color"],
+        "line-width": 3,
+        "line-opacity": 0.85,
+      },
+    });
+  } catch { /* already added */ }
+}
+
 function destroyRuntime(runtime: Runtime | null) {
   if (!runtime) return;
 
@@ -1016,12 +1200,17 @@ function hydrateMarkerElement(
     .filter(Boolean)
     .join(" ");
   marker.setAttribute("aria-label", point.title);
-  marker.textContent =
-    point.kind === "vehicle" || point.kind === "driver" ? ">" : "o";
-  marker.style.fontSize =
-    point.kind === "vehicle" || point.kind === "driver" ? "18px" : "24px";
-  marker.style.fontWeight = "700";
+  marker.style.fontSize = "16px";
   marker.style.lineHeight = "1";
+  if (point.kind === "driver") {
+    marker.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M6 20v-2a6 6 0 0 1 12 0v2"/></svg>`;
+  } else if (point.kind === "vehicle") {
+    marker.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="3" width="15" height="13" rx="1"/><path d="M16 8h4l3 5v3h-7V8z"/><circle cx="5.5" cy="18.5" r="2.5"/><circle cx="18.5" cy="18.5" r="2.5"/></svg>`;
+  } else if (point.kind === "warehouse") {
+    marker.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>`;
+  } else {
+    marker.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>`;
+  }
 }
 
 function buildSelectionElement() {
@@ -1033,9 +1222,10 @@ function buildSelectionElement() {
 }
 
 function markerTone(kind: MapPoint["kind"]) {
-  if (kind === "warehouse") return "bg-amber-500 text-white";
-  if (kind === "pickup") return "bg-sky-500 text-white";
-  return "bg-emerald-500 text-white";
+  if (kind === "warehouse") return "bg-slate-400 text-white";
+  if (kind === "pickup") return "bg-blue-500 text-white";
+  if (kind === "driver") return "bg-emerald-500 text-white";
+  return "bg-emerald-600 text-white"; // vehicle
 }
 
 function buildObjectLabel(layerId?: string, objectId?: string) {

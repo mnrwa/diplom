@@ -1,7 +1,12 @@
 {
-  "/lk/page": "app/lk/page.js",
-  "/page": "app/page.js",
+  "/_not-found/page": "app/_not-found/page.js",
   "/dashboard/drivers/[id]/page": "app/dashboard/drivers/[id]/page.js",
   "/login/page": "app/login/page.js",
-  "/dashboard/page": "app/dashboard/page.js"
+  "/driver/page": "app/driver/page.js",
+  "/lk/page": "app/lk/page.js",
+  "/marketplace/page": "app/marketplace/page.js",
+  "/dashboard/page": "app/dashboard/page.js",
+  "/page": "app/page.js",
+  "/track/[token]/page": "app/track/[token]/page.js",
+  "/customer/page": "app/customer/page.js"
 }

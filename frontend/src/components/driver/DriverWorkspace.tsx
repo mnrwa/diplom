@@ -1,15 +1,30 @@
 "use client";
 
 import MapView, { type MapLine, type MapPoint } from "@/components/map/MapView";
-import type { DriverDetail } from "@/lib/api";
+import type { DriverDetail, SessionUser } from "@/lib/api";
 import { useGpsEmitter } from "@/hooks/useGpsEmitter";
 import { VoiceAlerts } from "@/components/driver/VoiceAlerts";
-import { WaybillCard } from "@/components/driver/WaybillModal";
-import { TelematicsCard } from "@/components/driver/TelematicsCard";
 import { useQuery } from "@tanstack/react-query";
-import { getDigitalTwin } from "@/lib/api";
-import { DigitalTwinPlayer } from "@/components/driver/DigitalTwin";
+
+const AI_URL = process.env.NEXT_PUBLIC_AI_URL ?? "http://localhost:8000";
+
+async function fetchNewsDigests(items: { id: string; title: string; summary: string }[]) {
+  if (!items.length) return {} as Record<string, string>;
+  try {
+    const r = await fetch(`${AI_URL}/ai/news-digest`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(items),
+    });
+    const data: { id: string; digest: string }[] = await r.json();
+    return Object.fromEntries(data.map((d) => [d.id, d.digest]));
+  } catch {
+    return {} as Record<string, string>;
+  }
+}
 import { useOfflineGps } from "@/hooks/useOfflineGps";
+import { useWebSocket } from "@/hooks/useWebSocket";
+import { ChatPanel } from "@/components/ChatPanel";
 import {
   ArrowLeft,
   BadgeAlert,
@@ -27,28 +42,71 @@ import {
   WifiOff,
 } from "lucide-react";
 import Link from "next/link";
-import { type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 
 export default function DriverWorkspace({
   driver,
   mode,
   vehicleId,
   routeId,
+  currentUser,
 }: {
   driver: DriverDetail;
   mode: "admin" | "driver";
   vehicleId?: number | null;
   routeId?: number | null;
+  currentUser?: SessionUser | null;
 }) {
   const gps = useGpsEmitter(
     mode === "driver" ? vehicleId : null,
     mode === "driver" ? routeId : null,
   );
 
+  // Admin mode: get real-time vehicle positions from WebSocket (mock simulator)
+  const { positions: wsPositions } = useWebSocket();
+
+  // Fetch OSRM route geometry when not stored in riskFactors
+  const [osrmGeometry, setOsrmGeometry] = useState<[number, number][] | null>(null);
+  useEffect(() => {
+    const route = driver.activeRoute;
+    if (!route) { setOsrmGeometry(null); return; }
+    if (
+      Array.isArray((route.riskFactors as any)?.routing?.geometry) &&
+      (route.riskFactors as any).routing.geometry.length > 1
+    ) {
+      setOsrmGeometry(null);
+      return;
+    }
+    const start = route.startPoint;
+    const end = route.endPoint;
+    if (!start || !end) return;
+    let cancelled = false;
+    fetch(
+      `https://router.project-osrm.org/route/v1/driving/${start.lon},${start.lat};${end.lon},${end.lat}?geometries=geojson&overview=full`,
+    )
+      .then((r) => r.json())
+      .then((data) => {
+        if (cancelled) return;
+        const coords: [number, number][] | undefined =
+          data?.routes?.[0]?.geometry?.coordinates;
+        if (Array.isArray(coords) && coords.length > 1) setOsrmGeometry(coords);
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [driver.activeRoute?.id]);
+
   const lines: MapLine[] = [];
   const points: MapPoint[] = [];
-  const routeCoordinates = driver.activeRoute ? buildLine(driver.activeRoute) : [];
-  const trackCoordinates = buildTrackLine(driver.track);
+  const routeCoordinates =
+    osrmGeometry && osrmGeometry.length > 1
+      ? osrmGeometry
+      : driver.activeRoute
+      ? buildLine(driver.activeRoute)
+      : [];
+  // Don't show backend track when driver has live GPS active — it would draw a
+  // straight line from an old stored position to the real device position.
+  const liveGpsActive = mode === "driver" && gps.status === "active";
+  const trackCoordinates = liveGpsActive ? [] : buildTrackLine(driver.track);
 
   if (driver.activeRoute && routeCoordinates.length > 1) {
     lines.push({
@@ -90,22 +148,39 @@ export default function DriverWorkspace({
     });
   }
 
-  // Приоритет: реальные GPS-координаты водителя из браузера
-  const livePosition = mode === "driver" && gps.position
-    ? {
-        lat: gps.position.lat,
-        lon: gps.position.lon,
-        speed: gps.position.speed ?? null,
-        timestamp: new Date(gps.position.timestamp).toISOString(),
-      }
-    : driver.latestPosition;
+  // Priority: real GPS from browser (driver mode) → WebSocket (admin mode) → DB snapshot
+  const wsVehiclePos =
+    mode === "admin" && driver.vehicle
+      ? (wsPositions[driver.vehicle.id] ?? null)
+      : null;
+
+  const livePosition =
+    mode === "driver" && gps.position
+      ? {
+          lat: gps.position.lat,
+          lon: gps.position.lon,
+          speed: gps.position.speed ?? null,
+          timestamp: new Date(gps.position.timestamp).toISOString(),
+        }
+      : wsVehiclePos
+      ? {
+          lat: wsVehiclePos.lat,
+          lon: wsVehiclePos.lon,
+          speed: wsVehiclePos.speed ?? null,
+          timestamp: wsVehiclePos.timestamp,
+        }
+      : driver.latestPosition;
 
   if (livePosition) {
     points.push({
       id: `driver-${driver.id}`,
-      kind: "driver",
-      title: driver.name,
-      subtitle: driver.vehicle?.plateNumber || "Транспорт не назначен",
+      kind: mode === "admin" ? "vehicle" : "driver",
+      title: mode === "admin"
+        ? (driver.vehicle?.plateNumber || driver.name)
+        : driver.name,
+      subtitle: mode === "admin"
+        ? driver.name
+        : (driver.vehicle?.plateNumber || "Транспорт не назначен"),
       longitude: livePosition.lon,
       latitude: livePosition.lat,
       speed: livePosition.speed ?? undefined,
@@ -120,11 +195,13 @@ export default function DriverWorkspace({
 
   const offlineGps = useOfflineGps(mode === "driver" ? (vehicleId ?? null) : null);
 
-  const { data: digitalTwin } = useQuery({
-    queryKey: ["twin", driver.activeRoute?.id],
-    queryFn: () => getDigitalTwin(driver.activeRoute!.id),
-    enabled: !!driver.activeRoute?.id,
-    staleTime: 30_000,
+  const { data: newsDigests = {} } = useQuery({
+    queryKey: ["news-digest", driver.id],
+    queryFn: () => fetchNewsDigests(
+      driver.newsFeed.map((n) => ({ id: String(n.id), title: n.title, summary: n.summary }))
+    ),
+    enabled: driver.newsFeed.length > 0,
+    staleTime: 300_000,
   });
 
   return (
@@ -243,7 +320,13 @@ export default function DriverWorkspace({
         <article className="rounded-[28px] border border-sand bg-white p-6">
           <p className="text-xs uppercase tracking-[0.32em] text-warmsilver">Карта маршрута</p>
           <h2 className="mt-3 text-2xl font-semibold text-plum">
-            Положение{mode === "driver" && gps.status === "active" ? " (Live GPS)" : ""}
+            {mode === "admin"
+              ? wsVehiclePos
+                ? "Позиция · Live GPS"
+                : "Позиция · Имитация движения"
+              : gps.status === "active"
+              ? "Положение (Live GPS)"
+              : "Положение"}
           </h2>
           {mode === "driver" && gps.status === "active" && (
             <div className="mt-3 rounded-2xl border border-pgreen/20 bg-pgreen/5 px-4 py-3 text-sm text-pgreen">
@@ -252,7 +335,9 @@ export default function DriverWorkspace({
           )}
           {mode === "admin" && (
             <div className="mt-3 rounded-2xl border border-pgreen/20 bg-pgreen/5 px-4 py-3 text-sm text-pgreen">
-              GPS обновляется автоматически. Реальные координаты приходят от браузера водителя.
+              {wsVehiclePos
+                ? `Live GPS · ${wsVehiclePos.lat.toFixed(4)}, ${wsVehiclePos.lon.toFixed(4)}`
+                : "Имитация движения · обновляется каждые 4 сек"}
             </div>
           )}
           <div className="mt-6">
@@ -270,6 +355,8 @@ export default function DriverWorkspace({
               {livePosition
                 ? mode === "driver" && gps.status === "active"
                   ? `Live GPS · точность ${Math.round(gps.position?.accuracy ?? 0)} м`
+                  : wsVehiclePos
+                  ? `WebSocket · ${formatPositionUpdatedAt(wsVehiclePos.timestamp)}`
                   : `Последнее GPS: ${formatPositionUpdatedAt(livePosition.timestamp)}`
                 : "GPS пока не пришло"}
             </div>
@@ -335,23 +422,29 @@ export default function DriverWorkspace({
         </div>
       </section>
 
-      {/* Digital Twin */}
-      {digitalTwin && (
-        <section className="mt-4">
-          <DigitalTwinPlayer twin={digitalTwin} />
-        </section>
-      )}
-
-      {/* Waybill */}
-      {driver.activeRoute && (
-        <section className="mt-4">
-          <WaybillCard routeId={driver.activeRoute.id} />
-        </section>
-      )}
-
-      {/* Telematics */}
-      <section className="mt-4">
-        <TelematicsCard driverId={driver.id} />
+      {/* Chat */}
+      <section className="mt-4 rounded-[28px] border border-sand bg-white p-6">
+        <p className="text-xs uppercase tracking-[0.32em] text-warmsilver">Связь</p>
+        <h2 className="mt-3 mb-4 text-2xl font-semibold text-plum">
+          {mode === "admin" ? `Чат с водителем — ${driver.name}` : "Чат с диспетчером"}
+        </h2>
+        {mode === "admin" && currentUser ? (
+          <ChatPanel
+            senderId={currentUser.id}
+            senderName={currentUser.name}
+            role="DISPATCHER"
+            targetDriverId={driver.id}
+            routeId={driver.activeRoute?.id ?? null}
+          />
+        ) : mode === "driver" ? (
+          <ChatPanel
+            senderId={driver.id}
+            senderName={driver.name}
+            role="DRIVER"
+            targetDriverId={driver.id}
+            routeId={driver.activeRoute?.id ?? null}
+          />
+        ) : null}
       </section>
 
       <section className="mt-4 rounded-[28px] border border-sand bg-white p-6">
@@ -370,8 +463,9 @@ export default function DriverWorkspace({
                     Риск {Math.round(item.severity * 100)}%
                   </span>
                 </div>
-                <h3 className="mt-4 text-sm font-semibold leading-6 text-plum">{item.title}</h3>
-                <p className="text-sm leading-7 text-plum">{item.summary}</p>
+                <p className="mt-4 text-sm leading-6 text-plum">
+                  {newsDigests[item.id] || item.summary || item.title}
+                </p>
                 <div className="mt-4 flex items-center gap-2 text-xs text-warmsilver">
                   <Newspaper className="h-3.5 w-3.5" />
                   <span>{item.channel}</span>

@@ -1,6 +1,7 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { HttpService } from '@nestjs/axios';
 import { firstValueFrom } from 'rxjs';
+import { randomUUID } from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
 import { LocationsService } from '../locations/locations.service';
 import {
@@ -90,6 +91,16 @@ export class RoutesService {
     const optimized = await this.buildOptimizedRoutePlan(startPoint, endPoint);
     const shouldActivate = Boolean(driverId || data.vehicleId);
 
+    if (shouldActivate) {
+      await this.cancelConflictingRoutes({
+        driverId,
+        vehicleId: data.vehicleId,
+      });
+    }
+
+    // Calculate fuel cost if vehicle has fuel efficiency data
+    const fuelCostRub = await this.calcFuelCost(data.vehicleId, optimized.distanceKm);
+
     const created = await this.prisma.route.create({
       data: {
         name: data.name,
@@ -108,6 +119,8 @@ export class RoutesService {
         vehicleId: data.vehicleId,
         dispatcherId,
         status: shouldActivate ? 'ACTIVE' : 'PLANNED',
+        trackingToken: randomUUID(),
+        fuelCostRub,
       },
       include: {
         vehicle: true,
@@ -330,6 +343,16 @@ export class RoutesService {
     await this.prisma.driverNews.deleteMany({ where: { routeId: id } });
     await this.prisma.gpsLog.deleteMany({ where: { routeId: id } });
     return this.prisma.route.delete({ where: { id } });
+  }
+
+  private async calcFuelCost(vehicleId: number | undefined, distanceKm: number | undefined): Promise<number | null> {
+    if (!vehicleId || !distanceKm) return null;
+    try {
+      const vehicle = await this.prisma.vehicle.findUnique({ where: { id: vehicleId } });
+      const efficiency = (vehicle as any)?.fuelEfficiencyL100km ?? 25.0;
+      const fuelPrice = Number(process.env.FUEL_PRICE_RUB ?? 65);
+      return Math.round(distanceKm * efficiency / 100 * fuelPrice);
+    } catch { return null; }
   }
 
   private buildGeometryFromRoute(route: {
@@ -907,6 +930,12 @@ export class RoutesService {
     }).sort((a, b) => b.score - a.score);
 
     const best = scored[0];
+    await this.cancelConflictingRoutes({
+      driverId: best.driverId,
+      vehicleId: best.vehicleId ?? undefined,
+      excludeRouteId: routeId,
+    });
+
     await this.prisma.route.update({
       where: { id: routeId },
       data: {
@@ -917,6 +946,38 @@ export class RoutesService {
     });
 
     return { ok: true, assigned: best, suggestions: scored.slice(0, 3) };
+  }
+
+  private async cancelConflictingRoutes(input: {
+    driverId?: number | null;
+    vehicleId?: number | null;
+    excludeRouteId?: number;
+  }) {
+    const clauses: Array<Record<string, number>> = [];
+
+    if (input.driverId) {
+      clauses.push({ driverId: input.driverId });
+    }
+
+    if (input.vehicleId) {
+      clauses.push({ vehicleId: input.vehicleId });
+    }
+
+    if (!clauses.length) {
+      return;
+    }
+
+    await this.prisma.route.updateMany({
+      where: {
+        id: input.excludeRouteId ? { not: input.excludeRouteId } : undefined,
+        status: { in: ['ACTIVE', 'PLANNED', 'RECALCULATING'] },
+        OR: clauses,
+      },
+      data: {
+        status: 'CANCELLED',
+        updatedAt: new Date(),
+      },
+    });
   }
 
   async createMultistop(

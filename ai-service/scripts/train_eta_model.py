@@ -22,7 +22,6 @@ Output:
 import argparse
 import json
 import math
-import os
 import random
 import sys
 from pathlib import Path
@@ -31,9 +30,8 @@ import joblib
 import numpy as np
 import pandas as pd
 from xgboost import XGBRegressor
-from sklearn.model_selection import train_test_split, cross_val_score
+from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_absolute_error, mean_squared_error
-from sklearn.preprocessing import StandardScaler
 
 ROOT = Path(__file__).parent.parent
 MODEL_DIR = ROOT / "model"
@@ -57,33 +55,38 @@ TARGET = "actual_minutes"
 
 # ── Synthetic data generator ──────────────────────────────────────────────────
 
+# Highway base speeds calibrated to real Russian federal roads (avg truck speed)
+# Moscow/SPb — urban arterials. Volga/Ural/Siberia — M-7, M-53, M-55 federal.
+# South — M-4 Don (4-lane, best road in Russia). Central — M-1, M-2.
 REGIONS = {
-    "moscow":      {"base_kmh": 45,  "weight": 0.25},
-    "spb":         {"base_kmh": 50,  "weight": 0.12},
-    "volga":       {"base_kmh": 75,  "weight": 0.15},
-    "ural":        {"base_kmh": 72,  "weight": 0.10},
-    "siberia":     {"base_kmh": 68,  "weight": 0.10},
-    "south":       {"base_kmh": 78,  "weight": 0.12},
-    "central":     {"base_kmh": 73,  "weight": 0.16},
+    "moscow":      {"base_kmh": 47,  "weight": 0.25},  # МКАД + вылетные: камеры везде
+    "spb":         {"base_kmh": 53,  "weight": 0.12},  # КАД + ЗСД: камеры, пробки
+    "volga":       {"base_kmh": 95,  "weight": 0.15},  # М-7 Волга: мало камер, 100-120
+    "ural":        {"base_kmh": 92,  "weight": 0.10},  # Р-242, Р-351: открытая трасса
+    "siberia":     {"base_kmh": 98,  "weight": 0.10},  # М-53/М-55: редкие камеры, 110-130
+    "south":       {"base_kmh": 90,  "weight": 0.12},  # М-4 Дон: много камер, лимит 110
+    "central":     {"base_kmh": 93,  "weight": 0.16},  # М-1, М-2: обновлённые, камеры есть
 }
 
 CARGO_TYPES = {
-    "express":  {"speed_mult": 1.10, "weight": 0.20},
+    "express":  {"speed_mult": 1.08, "weight": 0.20},
     "standard": {"speed_mult": 1.00, "weight": 0.45},
-    "heavy":    {"speed_mult": 0.82, "weight": 0.20},
-    "cold":     {"speed_mult": 0.88, "weight": 0.15},
+    "heavy":    {"speed_mult": 0.83, "weight": 0.20},
+    "cold":     {"speed_mult": 0.89, "weight": 0.15},
 }
 
 
 def _base_speed(distance_km: float, region_kmh: float) -> float:
-    """Speed depends on route type (city / regional / highway)."""
+    """Speed depends on route type: urban → regional → open highway → very long haul."""
     if distance_km < 30:
-        return min(region_kmh, 40)
-    if distance_km < 150:
-        return region_kmh * 0.85
-    if distance_km < 500:
-        return region_kmh
-    return region_kmh * 0.95  # fatigue / stops on long haul
+        return min(region_kmh, 43)          # pure city/suburb
+    if distance_km < 100:
+        return region_kmh * 0.72            # suburban + подъездные дороги
+    if distance_km < 400:
+        return region_kmh * 0.88            # региональная + федеральная смешанная
+    if distance_km < 1200:
+        return region_kmh                    # открытая федеральная трасса
+    return region_kmh * 0.87               # очень длинный рейс: ост. каждые 4 ч
 
 
 def _weather_factor(weather_score: float) -> float:
@@ -138,23 +141,26 @@ def generate_synthetic(n: int = 80_000, seed: int = 42) -> pd.DataFrame:
         base_kmh = _base_speed(dist, REGIONS[region]["base_kmh"])
         speed = base_kmh * CARGO_TYPES[cargo]["speed_mult"]
 
-        # Apply factors
+        # Rush hour slows city routes heavily but barely affects long-haul highways
+        city_weight = min(1.0, 60.0 / max(dist, 1.0))
         if is_rush:
-            speed *= rng.uniform(0.55, 0.75)
+            rush_penalty = rng.uniform(0.55, 0.75)   # city: strong penalty
+            highway_penalty = rng.uniform(0.90, 0.98) # highway: minimal
+            speed *= rush_penalty * city_weight + highway_penalty * (1.0 - city_weight)
         if is_night:
-            speed *= rng.uniform(1.05, 1.20)
+            speed *= rng.uniform(0.90, 0.97)          # night slightly slower (visibility)
         if is_wknd:
-            speed *= rng.uniform(0.97, 1.08)
+            speed *= rng.uniform(0.98, 1.06)
 
         speed *= _weather_factor(weather_score)
-        speed *= (1.0 - news_score * 0.25)
-        speed *= (1.0 - risk_score * 0.18)
+        speed *= (1.0 - news_score * 0.22)
+        speed *= (1.0 - risk_score * 0.15)
 
-        # Interaction: rush hour × bad weather is much worse
+        # Interaction: rush + bad weather is compounding in cities
         if is_rush and weather_score > 0.4:
-            speed *= rng.uniform(0.60, 0.80)
+            speed *= 1.0 - city_weight * rng.uniform(0.15, 0.30)
 
-        speed = max(15.0, speed)
+        speed = max(18.0, speed)
 
         base_minutes = (dist / speed) * 60
 

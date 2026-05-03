@@ -3,6 +3,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import * as bcrypt from 'bcryptjs';
 import { PrismaService } from '../prisma/prisma.service';
 
@@ -131,7 +132,9 @@ export class DriversService {
     });
 
     if (!profile) {
-      throw new NotFoundException('У текущего пользователя нет профиля водителя');
+      throw new NotFoundException(
+        'У текущего пользователя нет профиля водителя',
+      );
     }
 
     return this.findOne(profile.id);
@@ -154,44 +157,102 @@ export class DriversService {
       throw new ConflictException('Email уже используется');
     }
 
-    const hashed = await bcrypt.hash(data.password, 10);
-
-    const created = await this.prisma.$transaction(async (tx) => {
-      const user = await tx.user.create({
-        data: {
-          email: data.email,
-          password: hashed,
-          name: data.name,
-          phone: data.phone,
-          role: 'DRIVER',
-        },
-      });
-
-      const profile = await tx.driverProfile.create({
-        data: {
-          userId: user.id,
-          phone: data.phone,
-          licenseNumber: data.licenseNumber,
-          licenseCategory: data.licenseCategory || 'C',
-          experienceYears: data.experienceYears ?? 3,
-          vehicleId: data.vehicleId,
-        },
-      });
-
-      if (data.vehicleId) {
-        await tx.vehicle.update({
-          where: { id: data.vehicleId },
-          data: {
-            driverName: data.name,
+    if (data.vehicleId) {
+      const vehicle = await this.prisma.vehicle.findUnique({
+        where: { id: data.vehicleId },
+        include: {
+          driverProfile: {
+            include: {
+              user: {
+                select: {
+                  name: true,
+                },
+              },
+            },
           },
-        });
+        },
+      });
+
+      if (!vehicle) {
+        throw new NotFoundException('Транспорт не найден');
       }
 
-      return { user, profile };
-    });
+      if (vehicle.driverProfile) {
+        const assignedDriverName =
+          vehicle.driverProfile.user?.name ?? 'другим водителем';
+
+        throw new ConflictException(
+          `Транспорт ${vehicle.plateNumber} уже закреплён за ${assignedDriverName}`,
+        );
+      }
+    }
+
+    const hashed = await bcrypt.hash(data.password, 10);
+
+    let created: {
+      user: { email: string };
+      profile: { id: number };
+    };
+
+    try {
+      created = await this.prisma.$transaction(async (tx) => {
+        const user = await tx.user.create({
+          data: {
+            email: data.email,
+            password: hashed,
+            name: data.name,
+            phone: data.phone,
+            role: 'DRIVER',
+          },
+        });
+
+        const profile = await tx.driverProfile.create({
+          data: {
+            userId: user.id,
+            phone: data.phone,
+            licenseNumber: data.licenseNumber,
+            licenseCategory: data.licenseCategory || 'C',
+            experienceYears: data.experienceYears ?? 3,
+            vehicleId: data.vehicleId,
+          },
+        });
+
+        if (data.vehicleId) {
+          await tx.vehicle.update({
+            where: { id: data.vehicleId },
+            data: {
+              driverName: data.name,
+            },
+          });
+        }
+
+        return { user, profile };
+      });
+    } catch (error) {
+      if (
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === 'P2002'
+      ) {
+        const target = Array.isArray(error.meta?.target)
+          ? error.meta.target.join(', ')
+          : String(error.meta?.target ?? '');
+
+        if (target.includes('vehicleId')) {
+          throw new ConflictException(
+            'Выбранный транспорт уже закреплён за другим водителем',
+          );
+        }
+
+        if (target.includes('email')) {
+          throw new ConflictException('Email уже используется');
+        }
+      }
+
+      throw error;
+    }
 
     return {
-      message: 'Учетная запись водителя создана',
+      message: 'Учётная запись водителя создана',
       credentials: {
         email: created.user.email,
         password: data.password,
@@ -203,13 +264,30 @@ export class DriversService {
   async getTelematics(driverId: number) {
     const profile = await this.prisma.driverProfile.findUnique({
       where: { id: driverId },
-      include: { vehicle: { include: { gpsLogs: { orderBy: { timestamp: 'asc' }, take: 1000 } } } },
+      include: {
+        vehicle: {
+          include: {
+            gpsLogs: { orderBy: { timestamp: 'asc' }, take: 1000 },
+          },
+        },
+      },
     });
-    if (!profile) throw new NotFoundException('Водитель не найден');
+
+    if (!profile) {
+      throw new NotFoundException('Водитель не найден');
+    }
 
     const logs = profile.vehicle?.gpsLogs ?? [];
     if (logs.length < 2) {
-      return { driverId, score: 100, events: [], totalPoints: 0, speedViolations: 0, harshBraking: 0, harshAcceleration: 0 };
+      return {
+        driverId,
+        score: 100,
+        events: [],
+        totalPoints: 0,
+        speedViolations: 0,
+        harshBraking: 0,
+        harshAcceleration: 0,
+      };
     }
 
     const SPEED_LIMIT = 110;
@@ -217,34 +295,70 @@ export class DriversService {
     let speedViolations = 0;
     let harshBraking = 0;
     let harshAcceleration = 0;
-    const events: Array<{ type: string; lat: number; lon: number; timestamp: string; value: number }> = [];
+    const events: Array<{
+      type: string;
+      lat: number;
+      lon: number;
+      timestamp: string;
+      value: number;
+    }> = [];
 
     for (let i = 1; i < logs.length; i++) {
       const prev = logs[i - 1];
       const curr = logs[i];
       const currSpeed = curr.speed ?? 0;
       const prevSpeed = prev.speed ?? 0;
-      const dt = (new Date(curr.timestamp).getTime() - new Date(prev.timestamp).getTime()) / 1000;
+      const dt =
+        (new Date(curr.timestamp).getTime() -
+          new Date(prev.timestamp).getTime()) /
+        1000;
 
       if (currSpeed > SPEED_LIMIT) {
         speedViolations++;
-        if (events.length < 20) events.push({ type: 'SPEEDING', lat: curr.lat, lon: curr.lon, timestamp: curr.timestamp.toISOString(), value: currSpeed });
+        if (events.length < 20) {
+          events.push({
+            type: 'SPEEDING',
+            lat: curr.lat,
+            lon: curr.lon,
+            timestamp: curr.timestamp.toISOString(),
+            value: currSpeed,
+          });
+        }
       }
 
       if (dt > 0 && dt < 30) {
         const dvKmh = prevSpeed - currSpeed;
         if (dvKmh > HARSH_THRESHOLD) {
           harshBraking++;
-          if (events.length < 20) events.push({ type: 'HARSH_BRAKING', lat: curr.lat, lon: curr.lon, timestamp: curr.timestamp.toISOString(), value: dvKmh });
+          if (events.length < 20) {
+            events.push({
+              type: 'HARSH_BRAKING',
+              lat: curr.lat,
+              lon: curr.lon,
+              timestamp: curr.timestamp.toISOString(),
+              value: dvKmh,
+            });
+          }
         }
         if (currSpeed - prevSpeed > HARSH_THRESHOLD) {
           harshAcceleration++;
-          if (events.length < 20) events.push({ type: 'HARSH_ACCELERATION', lat: curr.lat, lon: curr.lon, timestamp: curr.timestamp.toISOString(), value: currSpeed - prevSpeed });
+          if (events.length < 20) {
+            events.push({
+              type: 'HARSH_ACCELERATION',
+              lat: curr.lat,
+              lon: curr.lon,
+              timestamp: curr.timestamp.toISOString(),
+              value: currSpeed - prevSpeed,
+            });
+          }
         }
       }
     }
 
-    const penalty = Math.min(100, speedViolations * 3 + harshBraking * 5 + harshAcceleration * 3);
+    const penalty = Math.min(
+      100,
+      speedViolations * 3 + harshBraking * 5 + harshAcceleration * 3,
+    );
     const score = Math.max(0, 100 - penalty);
 
     await this.prisma.driverProfile.update({
@@ -252,16 +366,30 @@ export class DriversService {
       data: { telematicsScore: score },
     });
 
-    return { driverId, score, events, totalPoints: logs.length, speedViolations, harshBraking, harshAcceleration };
+    return {
+      driverId,
+      score,
+      events,
+      totalPoints: logs.length,
+      speedViolations,
+      harshBraking,
+      harshAcceleration,
+    };
   }
 
   private serializeDriver(profile: any) {
-    const latestPosition = profile.vehicle?.gpsLogs?.[0]
+    const latestVehicleLog = profile.vehicle?.gpsLogs?.[0];
+    const activeRouteId = profile.routes?.[0]?.id ?? null;
+    const latestPosition =
+      latestVehicleLog &&
+      (!activeRouteId ||
+        latestVehicleLog.routeId == null ||
+        latestVehicleLog.routeId === activeRouteId)
       ? {
-          lat: profile.vehicle.gpsLogs[0].lat,
-          lon: profile.vehicle.gpsLogs[0].lon,
-          speed: profile.vehicle.gpsLogs[0].speed,
-          timestamp: profile.vehicle.gpsLogs[0].timestamp,
+          lat: latestVehicleLog.lat,
+          lon: latestVehicleLog.lon,
+          speed: latestVehicleLog.speed,
+          timestamp: latestVehicleLog.timestamp,
         }
       : null;
 
@@ -279,6 +407,8 @@ export class DriversService {
           distance: profile.routes[0].distance,
           estimatedTime: profile.routes[0].estimatedTime,
           riskScore: profile.routes[0].riskScore,
+          waypoints: profile.routes[0].waypoints,
+          riskFactors: profile.routes[0].riskFactors,
         }
       : null;
 

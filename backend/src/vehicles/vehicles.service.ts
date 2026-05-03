@@ -21,7 +21,7 @@ export class VehiclesService {
   findAll() {
     return this.prisma.vehicle.findMany({
       include: {
-        routes: { where: { status: 'ACTIVE' }, take: 1 },
+        routes: { where: { status: 'ACTIVE' }, take: 1, orderBy: { updatedAt: 'desc' } },
         gpsLogs: { orderBy: { timestamp: 'desc' }, take: 1 },
         driverProfile: { include: { user: true } },
         maintenanceRecords: { orderBy: { createdAt: 'desc' }, take: 3 },

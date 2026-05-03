@@ -27,20 +27,22 @@ enum Role {
 }
 
 model DriverProfile {
-  id              Int          @id @default(autoincrement())
-  userId          Int          @unique
-  phone           String?
-  licenseNumber   String?
-  licenseCategory String       @default("C")
-  experienceYears Int          @default(3)
-  rating          Float        @default(4.7)
-  telematicsScore Float?
-  status          DriverStatus @default(ON_SHIFT)
-  shiftStartedAt  DateTime     @default(now())
-  notes           String?
-  vehicleId       Int?         @unique
-  createdAt       DateTime     @default(now())
-  updatedAt       DateTime     @updatedAt
+  id                Int          @id @default(autoincrement())
+  userId            Int          @unique
+  phone             String?
+  licenseNumber     String?
+  licenseCategory   String       @default("C")
+  experienceYears   Int          @default(3)
+  rating            Float        @default(4.7)
+  telematicsScore   Float?
+  status            DriverStatus @default(ON_SHIFT)
+  shiftStartedAt    DateTime     @default(now())
+  notes             String?
+  vehicleId         Int?         @unique
+  telegramChatId    String?
+  telegramLinkedAt  DateTime?
+  createdAt         DateTime     @default(now())
+  updatedAt         DateTime     @updatedAt
   user            User         @relation(fields: [userId], references: [id])
   vehicle         Vehicle?     @relation(fields: [vehicleId], references: [id])
   routes          Route[]      @relation("RouteDriver")
@@ -55,14 +57,15 @@ enum DriverStatus {
 }
 
 model Vehicle {
-  id            Int           @id @default(autoincrement())
-  plateNumber   String        @unique
-  model         String
-  status        VehicleStatus @default(IDLE)
-  driverName    String?
-  mileageKm     Float         @default(0)
-  lastServiceKm Float         @default(0)
-  createdAt     DateTime      @default(now())
+  id                   Int           @id @default(autoincrement())
+  plateNumber          String        @unique
+  model                String
+  status               VehicleStatus @default(IDLE)
+  driverName           String?
+  mileageKm            Float         @default(0)
+  lastServiceKm        Float         @default(0)
+  fuelEfficiencyL100km Float         @default(25.0)
+  createdAt            DateTime      @default(now())
   routes        Route[]
   gpsLogs       GpsLog[]
   driverProfile DriverProfile?
@@ -114,6 +117,8 @@ model Route {
   riskScore      Float?
   riskFactors    Json?
   telegramChatId String?
+  trackingToken  String?       @unique
+  fuelCostRub    Float?
   createdAt      DateTime      @default(now())
   updatedAt      DateTime      @updatedAt
   vehicle        Vehicle?      @relation(fields: [vehicleId], references: [id])

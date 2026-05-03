@@ -60,23 +60,39 @@ class EtaOutput(BaseModel):
 # ── Analytical fallback ───────────────────────────────────────────────────────
 
 def _formula_predict(data: EtaInput) -> EtaOutput:
-    base_speed = 70.0
+    # Distance-adaptive base speed calibrated for Russian roads
+    # Short urban/suburban → regional highway → federal highway → very long haul
+    d = data.distance_km
+    if d < 60:
+        base_speed = 52.0    # city + suburban (cameras, traffic lights)
+    elif d < 250:
+        base_speed = 90.0    # regional highway, реальный поток 90-110
+    elif d < 700:
+        base_speed = 105.0   # federal highway без камер: 100-130, средняя ~105
+    else:
+        base_speed = 95.0    # длинный рейс: остановки каждые 4ч, горные участки
 
-    if 7 <= data.hour_of_day <= 9 or 17 <= data.hour_of_day <= 19:
-        tod_factor = 0.65
-    elif data.hour_of_day >= 22 or data.hour_of_day <= 5:
-        tod_factor = 1.15
+    # Rush-hour slowdown matters only for city fraction of the trip.
+    # A 1100 km Siberian route barely touches city traffic.
+    city_weight = min(1.0, 60.0 / max(d, 1.0))
+    is_rush = 7 <= data.hour_of_day <= 9 or 17 <= data.hour_of_day <= 19
+    is_night = data.hour_of_day >= 23 or data.hour_of_day <= 5
+
+    if is_rush:
+        tod_factor = 0.70 + 0.25 * (1.0 - city_weight)   # urban 0.70 → highway 0.95
+    elif is_night:
+        tod_factor = 0.93   # slight reduction: visibility, fatigue
     else:
         tod_factor = 1.0
 
-    dow_factor     = 1.05 if data.day_of_week in (5, 6) else 1.0
-    weather_factor = 1.0 - data.weather_score * 0.3
-    news_factor    = 1.0 - data.news_score    * 0.2
-    risk_factor    = 1.0 - data.risk_score    * 0.15
+    dow_factor     = 1.04 if data.day_of_week in (5, 6) else 1.0
+    weather_factor = 1.0 - data.weather_score * 0.28
+    news_factor    = 1.0 - data.news_score    * 0.18
+    risk_factor    = 1.0 - data.risk_score    * 0.12
 
-    speed = max(20.0, base_speed * tod_factor * dow_factor * weather_factor * news_factor * risk_factor)
+    speed = max(25.0, base_speed * tod_factor * dow_factor * weather_factor * news_factor * risk_factor)
     minutes = max(5, int(math.ceil(data.distance_km / speed * 60)))
-    confidence = min(0.95, 0.6 + (1.0 - data.risk_score) * 0.35)
+    confidence = min(0.95, 0.62 + (1.0 - data.risk_score) * 0.33)
 
     return EtaOutput(
         predicted_minutes=minutes,

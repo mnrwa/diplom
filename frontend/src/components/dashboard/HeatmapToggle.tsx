@@ -4,7 +4,8 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Flame, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { getHeatmap, type HeatmapCell } from "@/lib/api";
+import { getAiHeatmap, type HeatmapCell } from "@/lib/api";
+import { toast } from "@/lib/sonner";
 
 interface HeatmapToggleProps {
   onData: (cells: HeatmapCell[] | null) => void;
@@ -12,22 +13,29 @@ interface HeatmapToggleProps {
 
 export function HeatmapToggle({ onData }: HeatmapToggleProps) {
   const [enabled, setEnabled] = useState(false);
+  const [count, setCount] = useState(0);
 
   const { isFetching } = useQuery({
-    queryKey: ["heatmap"],
+    queryKey: ["ai-heatmap"],
     queryFn: async () => {
-      const data = await getHeatmap();
+      const data = await getAiHeatmap();
       onData(data);
+      setCount(data.length);
+      const highways = new Set(data.map((d) => d.highway).filter(Boolean)).size;
+      toast.success("Нагрузка дорог загружена", {
+        description: `${data.length} точек · ${highways} трасс`,
+      });
       return data;
     },
     enabled,
-    staleTime: 60_000,
+    staleTime: 120_000,
   });
 
   const toggle = () => {
     if (enabled) {
       onData(null);
       setEnabled(false);
+      setCount(0);
     } else {
       setEnabled(true);
     }
@@ -45,7 +53,11 @@ export function HeatmapToggle({ onData }: HeatmapToggleProps) {
       ) : (
         <Flame className="h-4 w-4" />
       )}
-      Тепловая карта
+      {isFetching
+        ? "Загружаем..."
+        : enabled
+          ? `Скрыть (${count} точек)`
+          : "Нагрузка дорог"}
     </Button>
   );
 }

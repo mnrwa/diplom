@@ -8,6 +8,7 @@ import {
   AlertTriangle,
   Bot,
   CheckCircle,
+  Copy,
   Loader2,
   LogOut,
   MapPin,
@@ -15,6 +16,7 @@ import {
   Plus,
   Route as RouteIcon,
   ShoppingBag,
+  TrendingUp,
   Users,
   Warehouse,
   Wifi,
@@ -51,11 +53,10 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import { DriverSelector } from "@/components/maps/DriverSelector";
 import MapView from "@/components/map/MapView";
-import { HeatmapToggle } from "@/components/dashboard/HeatmapToggle";
 import { AutoAssignButton } from "@/components/dashboard/AutoAssignModal";
-import { MultistopForm } from "@/components/dashboard/MultistopForm";
 import { MaintenancePanel } from "@/components/dashboard/MaintenancePanel";
 import { useWebSocket } from "@/hooks/useWebSocket";
+import { ChatPanel } from "@/components/ChatPanel";
 import {
   autoAssignRoute,
   createDriverAccount,
@@ -67,8 +68,12 @@ import {
   getRiskEvents,
   getRoutes,
   getVehicles,
+  getAiEta,
+  getAiWeather,
+  getAiForecast,
+  type AiEtaResult,
+  type ForecastResult,
   type GeocodeResult,
-  type HeatmapCell,
   type LocationPoint,
 } from "@/lib/api";
 import { clearSession, getStoredUser } from "@/lib/session";
@@ -139,8 +144,8 @@ export default function DashboardPage() {
 
   const [ready, setReady] = useState(false);
   const [userName, setUserName] = useState("Диспетчер");
+  const [userId, setUserId] = useState(0);
   const [selectedDriver, setSelectedDriver] = useState<string | null>(null);
-  const [heatmapData, setHeatmapData] = useState<HeatmapCell[] | null>(null);
 
   // Driver form
   const [driverMessage, setDriverMessage] = useState("");
@@ -210,6 +215,7 @@ export default function DashboardPage() {
     vehicleId: "",
   });
   const [routeSuccess, setRouteSuccess] = useState("");
+  const [routeEta, setRouteEta] = useState<{ loading: boolean; result: AiEtaResult | null; distanceKm: number }>({ loading: false, result: null, distanceKm: 0 });
 
   useEffect(() => {
     const user = getStoredUser();
@@ -222,6 +228,7 @@ export default function DashboardPage() {
       return;
     }
     setUserName(user.name || user.email);
+    setUserId(user.id ?? 0);
     setReady(true);
   }, [router]);
 
@@ -256,6 +263,49 @@ export default function DashboardPage() {
     refetchInterval: 45_000,
   });
 
+  const { data: forecastData } = useQuery<ForecastResult | null>({
+    queryKey: ["forecast", routes.length],
+    queryFn: async () => {
+      const today = new Date();
+      const history = Array.from({ length: 30 }, (_, i) => {
+        const d = new Date(today);
+        d.setDate(d.getDate() - (29 - i));
+        const dateStr = d.toISOString().slice(0, 10);
+        return { date: dateStr, count: routes.filter((r) => r.createdAt?.startsWith(dateStr)).length };
+      });
+      return getAiForecast(history);
+    },
+    enabled: ready && routes.length > 0,
+    staleTime: 10 * 60 * 1000,
+  });
+
+  useEffect(() => {
+    const { startPointId, endPointId } = routeForm;
+    if (!startPointId || !endPointId) {
+      setRouteEta((prev) => prev.loading || prev.result ? { loading: false, result: null, distanceKm: 0 } : prev);
+      return;
+    }
+    // Read locations via ref to avoid adding it as dependency
+    const start = locations.find((l) => l.id === Number(startPointId));
+    const end   = locations.find((l) => l.id === Number(endPointId));
+    if (!start || !end) return;
+
+    let cancelled = false;
+    setRouteEta({ loading: true, result: null, distanceKm: 0 });
+    const OSRM = "https://router.project-osrm.org";
+    Promise.all([
+      fetch(`${OSRM}/route/v1/driving/${start.lon},${start.lat};${end.lon},${end.lat}?overview=false`)
+        .then((r) => r.json()).then((d) => (d.routes?.[0]?.distance ?? 0) / 1000),
+      getAiWeather(start.lat, start.lon),
+    ]).then(([distKm, weather]) =>
+      getAiEta({ distance_km: distKm, weather_score: weather.risk_score ?? 0.1 })
+        .then((eta) => { if (!cancelled) setRouteEta({ loading: false, result: eta, distanceKm: Math.round(distKm) }); })
+    ).catch(() => { if (!cancelled) setRouteEta({ loading: false, result: null, distanceKm: 0 }); });
+
+    return () => { cancelled = true; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [routeForm.startPointId, routeForm.endPointId]);
+
   const createDriverMutation = useMutation({
     mutationFn: () =>
       createDriverAccount({
@@ -269,6 +319,14 @@ export default function DashboardPage() {
       setDriverForm({ name: "", email: "", password: "Driver123!", phone: "", vehicleId: "" });
       queryClient.invalidateQueries({ queryKey: ["drivers"] });
       queryClient.invalidateQueries({ queryKey: ["vehicles"] });
+    },
+    onError: (error: any) => {
+      const message = error?.response?.data?.message;
+      setDriverMessage(
+        Array.isArray(message)
+          ? message.join(", ")
+          : message || "Не удалось создать учётную запись водителя"
+      );
     },
   });
 
@@ -350,6 +408,10 @@ export default function DashboardPage() {
     () => drivers.filter((d) => d.status === "ON_SHIFT" && !d.activeRoute).length,
     [drivers]
   );
+  const availableDriverVehicles = useMemo(
+    () => vehicles.filter((vehicle) => !vehicle.driverProfile),
+    [vehicles]
+  );
   const warehouses = locations.filter((item) => item.type === "WAREHOUSE");
   const pickupPoints = locations.filter((item) => item.type === "PICKUP_POINT");
 
@@ -416,19 +478,6 @@ export default function DashboardPage() {
       </div>
 
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 -mt-3">
-        {riskEvents.length > 0 && (
-          <Card className="mb-4 border-amber-200 bg-amber-50">
-            <CardContent className="pt-4">
-              <div className="flex items-start gap-3">
-                <AlertTriangle className="h-5 w-5 text-amber-600 mt-0.5" />
-                <div>
-                  <p className="font-semibold text-amber-900">{riskEvents[0].title}</p>
-                  <p className="text-sm text-amber-800">{riskEvents[0].description}</p>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-        )}
 
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
           <Card>
@@ -490,7 +539,6 @@ export default function DashboardPage() {
                 <TabsTrigger value="overview">Обзор</TabsTrigger>
                 <TabsTrigger value="drivers">Водители</TabsTrigger>
                 <TabsTrigger value="routes">Маршруты</TabsTrigger>
-                <TabsTrigger value="multistop">Мультистоп</TabsTrigger>
                 <TabsTrigger value="maintenance">ТО</TabsTrigger>
                 <TabsTrigger value="locations">Сеть</TabsTrigger>
               </TabsList>
@@ -517,7 +565,6 @@ export default function DashboardPage() {
                         selectedDriver={selectedDriver}
                         onSelectDriver={setSelectedDriver}
                       />
-                      <HeatmapToggle onData={setHeatmapData} />
                     </div>
                     {(() => {
                       const points: Array<{
@@ -563,32 +610,25 @@ export default function DashboardPage() {
                       }
 
                       if (selectedDriverRoute) {
-                        const coordinates: [number, number][] = [];
-                        if (
-                          selectedDriverRoute.startLon != null &&
-                          selectedDriverRoute.startLat != null
-                        ) {
-                          coordinates.push([
-                            selectedDriverRoute.startLon,
-                            selectedDriverRoute.startLat,
-                          ]);
-                        }
-                        if (Array.isArray(selectedDriverRoute.waypoints)) {
-                          selectedDriverRoute.waypoints.forEach((item: any) => {
-                            if (item?.lon != null && item?.lat != null) {
-                              coordinates.push([item.lon, item.lat]);
-                            }
-                          });
-                        }
-                        if (
-                          selectedDriverRoute.endLon != null &&
-                          selectedDriverRoute.endLat != null
-                        ) {
-                          coordinates.push([
-                            selectedDriverRoute.endLon,
-                            selectedDriverRoute.endLat,
-                          ]);
-                        }
+                        // Use OSRM geometry if available, else waypoints, else straight line
+                        const osrmGeom = Array.isArray((selectedDriverRoute as any).riskFactors?.routing?.geometry)
+                          ? (selectedDriverRoute as any).riskFactors.routing.geometry
+                          : null;
+
+                        const coordinates: [number, number][] = osrmGeom
+                          ? osrmGeom.filter((p: any) => p?.lon != null).map((p: any) => [p.lon, p.lat] as [number, number])
+                          : (() => {
+                              const coords: [number, number][] = [];
+                              if (selectedDriverRoute.startLon != null && selectedDriverRoute.startLat != null)
+                                coords.push([selectedDriverRoute.startLon, selectedDriverRoute.startLat]);
+                              if (Array.isArray((selectedDriverRoute as any).waypoints))
+                                (selectedDriverRoute as any).waypoints.forEach((item: any) => {
+                                  if (item?.lon != null && item?.lat != null) coords.push([item.lon, item.lat]);
+                                });
+                              if (selectedDriverRoute.endLon != null && selectedDriverRoute.endLat != null)
+                                coords.push([selectedDriverRoute.endLon, selectedDriverRoute.endLat]);
+                              return coords;
+                            })();
 
                         if (coordinates.length > 1) {
                           lines.push({
@@ -601,22 +641,24 @@ export default function DashboardPage() {
                       }
 
                       drivers.forEach((driver) => {
-                        const wsPos = driver.vehicle
-                          ? wsPositions[driver.vehicle.id]
-                          : null;
+                        const wsPos = driver.vehicle ? wsPositions[driver.vehicle.id] : null;
                         const pos = wsPos || driver.latestPosition;
-                        if (!pos) return;
+                        // Fallback: show driver at route start point if no GPS yet
+                        const fallbackPos = !pos && driver.activeRoute?.startPoint
+                          ? { lat: driver.activeRoute.startPoint.lat, lon: driver.activeRoute.startPoint.lon, speed: null }
+                          : null;
+                        const resolvedPos = pos || fallbackPos;
+                        if (!resolvedPos) return;
 
                         points.push({
                           id: `driver-${driver.id}`,
                           entityId: driver.id,
                           kind: "driver",
                           title: driver.name,
-                          subtitle:
-                            driver.vehicle?.plateNumber || driver.email,
-                          longitude: pos.lon,
-                          latitude: pos.lat,
-                          speed: pos.speed ?? null,
+                          subtitle: driver.vehicle?.plateNumber || driver.email,
+                          longitude: resolvedPos.lon,
+                          latitude: resolvedPos.lat,
+                          speed: resolvedPos.speed ?? null,
                         });
                       });
 
@@ -776,8 +818,72 @@ export default function DashboardPage() {
                     </div>
                   </CardContent>
                 </Card>
+
+                {forecastData && forecastData.forecast?.length > 0 && (() => {
+                  const maxRoutes = Math.max(...forecastData.forecast.map((d) => d.predicted_routes), 1);
+                  return (
+                    <Card className="shadow-lg">
+                      <CardHeader>
+                        <CardTitle className="text-base flex items-center gap-2">
+                          <TrendingUp className="h-5 w-5 text-violet-500" />
+                          Прогноз нагрузки
+                        </CardTitle>
+                      </CardHeader>
+                      <CardContent className="space-y-3">
+                        <p className="text-xs text-gray-500 leading-snug">{forecastData.recommendation}</p>
+                        <div className="space-y-2">
+                          {forecastData.forecast.slice(0, 7).map((day) => (
+                            <div key={day.date} className="flex items-center gap-2">
+                              <span className="w-6 text-xs font-medium text-gray-600 shrink-0">{day.day_name}</span>
+                              <div className="flex-1 h-2 rounded-full bg-gray-100 overflow-hidden">
+                                <div
+                                  className={`h-full rounded-full transition-all ${
+                                    day.load_level === "high" ? "bg-red-400" :
+                                    day.load_level === "medium" ? "bg-amber-400" : "bg-emerald-400"
+                                  }`}
+                                  style={{ width: `${Math.round((day.predicted_routes / maxRoutes) * 100)}%` }}
+                                />
+                              </div>
+                              <span className="text-xs text-gray-500 w-5 text-right shrink-0">{day.predicted_routes}</span>
+                            </div>
+                          ))}
+                        </div>
+                        <p className="text-xs text-warmsilver">Пик: {forecastData.peak_day} · avg {forecastData.avg_daily_routes}/день</p>
+                      </CardContent>
+                    </Card>
+                  );
+                })()}
               </div>
             </div>
+
+            <Card className="shadow-lg">
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <Bot className="h-5 w-5 text-blue-500" />
+                  Чат с водителем
+                </CardTitle>
+                <CardDescription>
+                  {selectedDriver
+                    ? `Переписка с ${drivers.find((d) => String(d.id) === selectedDriver)?.name ?? "водителем"}`
+                    : "Выберите водителя на карте или в списке"}
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                {selectedDriver ? (
+                  <ChatPanel
+                    senderId={userId}
+                    senderName={userName}
+                    role="DISPATCHER"
+                    targetDriverId={Number(selectedDriver)}
+                    routeId={selectedDriverRoute?.id ?? null}
+                  />
+                ) : (
+                  <p className="text-sm text-gray-400 py-4 text-center">
+                    Нажмите на водителя на карте, чтобы открыть чат
+                  </p>
+                )}
+              </CardContent>
+            </Card>
           </TabsContent>
 
           <TabsContent value="drivers" className="space-y-6">
@@ -794,9 +900,9 @@ export default function DashboardPage() {
                 </CardHeader>
                 <CardContent className="space-y-4">
                   {driverMessage && (
-                    <Card className="border-emerald-200 bg-emerald-50">
+                    <Card className={createDriverMutation.isError ? "border-rose-200 bg-rose-50" : "border-emerald-200 bg-emerald-50"}>
                       <CardContent className="pt-4">
-                        <p className="text-sm text-emerald-800">
+                        <p className={createDriverMutation.isError ? "text-sm text-rose-800" : "text-sm text-emerald-800"}>
                           {driverMessage}
                         </p>
                       </CardContent>
@@ -854,7 +960,7 @@ export default function DashboardPage() {
                         <SelectValue placeholder="Назначить позже" />
                       </SelectTrigger>
                       <SelectContent>
-                        {vehicles.map((v) => (
+                        {availableDriverVehicles.map((v) => (
                           <SelectItem key={v.id} value={String(v.id)}>
                             {v.plateNumber} · {v.model}
                           </SelectItem>
@@ -933,194 +1039,139 @@ export default function DashboardPage() {
           </TabsContent>
 
           <TabsContent value="routes" className="space-y-6">
-            <Card className="shadow-lg">
-              <CardHeader>
-                <CardTitle className="flex items-center gap-2">
-                  <RouteIcon className="h-5 w-5 text-emerald-500" />
-                  Создать маршрут
-                </CardTitle>
-                <CardDescription>
-                  Выбор склада и ПВЗ (без ручного ввода координат)
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                {routeSuccess && (
-                  <Card className="border-emerald-200 bg-emerald-50">
-                    <CardContent className="pt-4">
-                      <p className="text-sm text-emerald-800 flex items-center gap-2">
-                        <CheckCircle className="h-4 w-4" />
-                        {routeSuccess}
-                      </p>
-                    </CardContent>
-                  </Card>
-                )}
+            <div className="rounded-[28px] border border-sand bg-white p-6 space-y-5">
+              <div>
+                <p className="text-xs uppercase tracking-[0.32em] text-warmsilver">AI · OSRM · Погода</p>
+                <h2 className="mt-1 text-2xl font-semibold text-plum">Создать маршрут</h2>
+                <p className="mt-1 text-sm text-olive">AI рассчитает время доставки с учётом погоды и дорожной обстановки</p>
+              </div>
 
-                <div className="grid gap-4 md:grid-cols-2">
-                  <div className="space-y-2">
-                    <Label>Склад (точка А)</Label>
-                    <Select
-                      value={routeForm.startPointId}
-                      onValueChange={(v) =>
-                        setRouteForm((current) => ({ ...current, startPointId: v }))
-                      }
-                    >
-                      <SelectTrigger>
-                        <SelectValue placeholder="Выберите склад" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {warehouses.map((item) => (
-                          <SelectItem key={item.id} value={String(item.id)}>
-                            {item.city} · {item.name}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  <div className="space-y-2">
-                    <Label>ПВЗ (точка Б)</Label>
-                    <Select
-                      value={routeForm.endPointId}
-                      onValueChange={(v) =>
-                        setRouteForm((current) => ({ ...current, endPointId: v }))
-                      }
-                    >
-                      <SelectTrigger>
-                        <SelectValue placeholder="Выберите ПВЗ" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {pickupPoints.map((item) => (
-                          <SelectItem key={item.id} value={String(item.id)}>
-                            {item.city} · {item.name}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
+              {routeSuccess && (
+                <div className="flex items-center gap-2 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
+                  <CheckCircle className="h-4 w-4 shrink-0" />
+                  {routeSuccess}
                 </div>
+              )}
 
-                {routeForm.startPointId && routeForm.endPointId ? (
-                  (() => {
-                    const start = locations.find(
-                      (item) => item.id === Number(routeForm.startPointId),
-                    );
-                    const end = locations.find(
-                      (item) => item.id === Number(routeForm.endPointId),
-                    );
-                    if (!start || !end) return null;
+              {/* Points */}
+              <div className="grid gap-4 md:grid-cols-2">
+                <div className="space-y-2">
+                  <Label className="text-xs uppercase tracking-widest text-warmsilver">Склад (точка А)</Label>
+                  <Select value={routeForm.startPointId} onValueChange={(v) => setRouteForm((c) => ({ ...c, startPointId: v }))}>
+                    <SelectTrigger><SelectValue placeholder="Выберите склад" /></SelectTrigger>
+                    <SelectContent>
+                      {warehouses.map((item) => (
+                        <SelectItem key={item.id} value={String(item.id)}>{item.city} · {item.name}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-2">
+                  <Label className="text-xs uppercase tracking-widest text-warmsilver">ПВЗ (точка Б)</Label>
+                  <Select value={routeForm.endPointId} onValueChange={(v) => setRouteForm((c) => ({ ...c, endPointId: v }))}>
+                    <SelectTrigger><SelectValue placeholder="Выберите ПВЗ" /></SelectTrigger>
+                    <SelectContent>
+                      {pickupPoints.map((item) => (
+                        <SelectItem key={item.id} value={String(item.id)}>{item.city} · {item.name}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
 
-                    return (
-                      <div className="rounded-2xl border border-gray-200 overflow-hidden">
-                        <MapView
-                          fitToData
-                          className="h-[360px] w-full rounded-none"
-                          points={[
-                            {
-                              id: `start-${start.id}`,
-                              entityId: start.id,
-                              kind: "warehouse",
-                              title: start.name,
-                              subtitle: `${start.city}, ${start.address}`,
-                              longitude: start.lon,
-                              latitude: start.lat,
-                            },
-                            {
-                              id: `end-${end.id}`,
-                              entityId: end.id,
-                              kind: "pickup",
-                              title: end.name,
-                              subtitle: `${end.city}, ${end.address}`,
-                              longitude: end.lon,
-                              latitude: end.lat,
-                            },
-                          ]}
-                          lines={[
-                            {
-                              id: "draft-route",
-                              name: "Draft",
-                              color: "#10b981",
-                              coordinates: [
-                                [start.lon, start.lat],
-                                [end.lon, end.lat],
-                              ],
-                            },
-                          ]}
-                        />
+              {/* AI ETA result — auto-calculated */}
+              {routeEta.loading && (
+                <div className="flex items-center gap-2 rounded-2xl border border-sand bg-fog px-4 py-3 text-sm text-olive">
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  AI рассчитывает маршрут...
+                </div>
+              )}
+
+              {routeEta.result && !routeEta.loading && (() => {
+                const eta = routeEta.result!;
+                const mins = eta.predicted_minutes;
+                const h = Math.floor(mins / 60);
+                const m = mins % 60;
+                const timeStr = h > 0 ? `${h} ч ${m > 0 ? `${m} мин` : ""}` : `${m} мин`;
+                return (
+                  <div className="rounded-2xl border border-purple-100 bg-gradient-to-r from-plum/5 to-purple-50 p-4 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <div className="rounded-xl bg-plum p-2">
+                          <RouteIcon className="h-4 w-4 text-white" />
+                        </div>
+                        <div>
+                          <p className="text-xs text-warmsilver uppercase tracking-widest">Расстояние</p>
+                          <p className="font-bold text-plum">{routeEta.distanceKm} км</p>
+                        </div>
                       </div>
-                    );
-                  })()
-                ) : null}
+                      <div className="text-right">
+                        <p className="text-xs text-warmsilver uppercase tracking-widest">AI · Время доставки</p>
+                        <p className="font-bold text-xl text-plum">{timeStr}</p>
+                      </div>
+                      <div className="text-right">
+                        <p className="text-xs text-warmsilver uppercase tracking-widest">Скорость</p>
+                        <p className="font-bold text-plum">{eta.factors.adjusted_speed_kmh} км/ч</p>
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-3 gap-2 text-xs">
+                      {[
+                        { label: "Время суток", val: eta.factors.tod_factor },
+                        { label: "Погода", val: eta.factors.weather_factor },
+                        { label: "Уверенность", val: eta.confidence },
+                      ].map(({ label, val }) => (
+                        <div key={label} className="rounded-xl bg-white border border-sand px-3 py-2 text-center">
+                          <p className="text-warmsilver">{label}</p>
+                          <p className={`font-semibold mt-0.5 ${val >= 0.85 ? "text-emerald-600" : val >= 0.65 ? "text-amber-500" : "text-rose-500"}`}>
+                            {Math.round(val * 100)}%
+                          </p>
+                        </div>
+                      ))}
+                    </div>
+                    <p className="text-xs text-warmsilver">
+                      Источник: {eta.source === "xgboost" ? `XGBoost (MAE ±${eta.model_mae_min} мин)` : "Аналитическая модель"}
+                    </p>
+                  </div>
+                );
+              })()}
 
-                <div className="grid md:grid-cols-3 gap-4">
-                  <div className="space-y-2">
-                    <Label>Название</Label>
-                    <Input
-                      placeholder="(необязательно)"
-                      value={routeForm.name}
-                      onChange={(e) =>
-                        setRouteForm((current) => ({ ...current, name: e.target.value }))
-                      }
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <Label>Водитель</Label>
-                    <Select
-                      value={routeForm.driverId}
-                      onValueChange={(v) =>
-                        setRouteForm((current) => ({ ...current, driverId: v }))
-                      }
-                    >
-                      <SelectTrigger>
-                        <SelectValue placeholder="Назначить позже" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {drivers.map((d) => (
-                          <SelectItem key={d.id} value={String(d.id)}>
-                            {d.name}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  <div className="space-y-2">
-                    <Label>Транспорт</Label>
-                    <Select
-                      value={routeForm.vehicleId}
-                      onValueChange={(v) =>
-                        setRouteForm((current) => ({ ...current, vehicleId: v }))
-                      }
-                    >
-                      <SelectTrigger>
-                        <SelectValue placeholder="Назначить позже" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {vehicles.map((v) => (
-                          <SelectItem key={v.id} value={String(v.id)}>
-                            {v.plateNumber}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
+              {/* Driver / vehicle / name */}
+              <div className="grid md:grid-cols-3 gap-4">
+                <div className="space-y-2">
+                  <Label className="text-xs uppercase tracking-widest text-warmsilver">Название</Label>
+                  <Input placeholder="(необязательно)" value={routeForm.name}
+                    onChange={(e) => setRouteForm((c) => ({ ...c, name: e.target.value }))} />
                 </div>
+                <div className="space-y-2">
+                  <Label className="text-xs uppercase tracking-widest text-warmsilver">Водитель</Label>
+                  <Select value={routeForm.driverId} onValueChange={(v) => setRouteForm((c) => ({ ...c, driverId: v }))}>
+                    <SelectTrigger><SelectValue placeholder="Назначить позже" /></SelectTrigger>
+                    <SelectContent>
+                      {drivers.map((d) => <SelectItem key={d.id} value={String(d.id)}>{d.name}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-2">
+                  <Label className="text-xs uppercase tracking-widest text-warmsilver">Транспорт</Label>
+                  <Select value={routeForm.vehicleId} onValueChange={(v) => setRouteForm((c) => ({ ...c, vehicleId: v }))}>
+                    <SelectTrigger><SelectValue placeholder="Назначить позже" /></SelectTrigger>
+                    <SelectContent>
+                      {vehicles.map((v) => <SelectItem key={v.id} value={String(v.id)}>{v.plateNumber}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
 
-                <Button
-                  onClick={() => createRouteMutation.mutate()}
-                  disabled={
-                    !routeForm.startPointId ||
-                    !routeForm.endPointId ||
-                    createRouteMutation.isPending
-                  }
-                  className="w-full bg-emerald-500 hover:bg-emerald-600"
-                >
-                  {createRouteMutation.isPending ? (
-                    <Loader2 className="h-4 w-4 animate-spin mr-2" />
-                  ) : (
-                    <RouteIcon className="h-4 w-4 mr-2" />
-                  )}
-                  Создать маршрут
-                </Button>
-              </CardContent>
-            </Card>
+              <Button
+                onClick={() => createRouteMutation.mutate()}
+                disabled={!routeForm.startPointId || !routeForm.endPointId || createRouteMutation.isPending}
+                className="w-full bg-plum hover:bg-plum/90 text-white"
+              >
+                {createRouteMutation.isPending
+                  ? <><Loader2 className="h-4 w-4 animate-spin mr-2" />Создаём...</>
+                  : <><RouteIcon className="h-4 w-4 mr-2" />Создать маршрут</>}
+              </Button>
+            </div>
 
             <Card className="shadow-lg">
               <CardHeader>
@@ -1145,6 +1196,11 @@ export default function DashboardPage() {
                                 Risk {Math.round(route.riskScore * 100)}%
                               </Badge>
                             )}
+                            {typeof route.fuelCostRub === "number" && (
+                              <Badge variant="outline" className="text-amber-700 border-amber-200 bg-amber-50">
+                                ⛽ {Math.round(route.fuelCostRub).toLocaleString("ru-RU")} ₽
+                              </Badge>
+                            )}
                           </div>
                           <p className="text-sm text-gray-600 mb-1">
                             {route.startPoint?.name || "Старт"} →{" "}
@@ -1165,15 +1221,28 @@ export default function DashboardPage() {
                                 : "—"}
                             </span>
                           </div>
-                          {!route.driver && (
-                            <div className="mt-2">
+                          <div className="mt-2 flex flex-wrap items-center gap-2">
+                            {!route.driver && (
                               <AutoAssignButton
                                 routeId={route.id}
                                 routeName={route.name}
                                 onSuccess={() => queryClient.invalidateQueries({ queryKey: ["routes"] })}
                               />
-                            </div>
-                          )}
+                            )}
+                            {route.trackingToken && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  navigator.clipboard.writeText(`${window.location.origin}/track/${route.trackingToken}`);
+                                }}
+                                className="flex items-center gap-1.5 rounded-lg border border-gray-200 bg-gray-50 px-3 py-1.5 text-xs text-gray-600 hover:bg-gray-100 transition"
+                                title="Скопировать ссылку для клиента"
+                              >
+                                <Copy className="h-3 w-3" />
+                                Ссылка клиенту
+                              </button>
+                            )}
+                          </div>
                         </div>
                       </div>
                     </CardContent>
@@ -1417,28 +1486,6 @@ export default function DashboardPage() {
                   </CardContent>
                 </Card>
               </div>
-            </div>
-          </TabsContent>
-          <TabsContent value="multistop" className="space-y-6">
-            <div className="grid md:grid-cols-2 gap-6">
-              <MultistopForm locations={locations} />
-              <Card className="shadow-lg">
-                <CardHeader>
-                  <CardTitle className="text-base flex items-center gap-2">
-                    <RouteIcon className="h-4 w-4 text-purple-500" />
-                    Как работает TSP
-                  </CardTitle>
-                </CardHeader>
-                <CardContent className="space-y-3 text-sm text-gray-600">
-                  <p>Алгоритм <strong>Greedy Nearest Neighbor</strong> находит оптимальный порядок объезда точек:</p>
-                  <ol className="list-decimal list-inside space-y-1">
-                    <li>Начинаем со склада (точка A)</li>
-                    <li>На каждом шаге выбираем ближайшую ещё не посещённую точку</li>
-                    <li>Итог — оптимизированный маршрут без лишних км</li>
-                  </ol>
-                  <p className="text-xs text-gray-400 mt-2">Экономия пробега до 20% по сравнению с произвольным порядком.</p>
-                </CardContent>
-              </Card>
             </div>
           </TabsContent>
 
