@@ -43,7 +43,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Separator } from "@/components/ui/separator";
 import {
   Tabs,
   TabsContent,
@@ -436,114 +435,85 @@ export default function DashboardPage() {
 
   if (!ready) {
     return (
-      <main className="mx-auto flex min-h-screen max-w-7xl items-center justify-center px-4 py-8">
-        <Card className="p-10 text-gray-600">Загрузка кабинета диспетчера...</Card>
-      </main>
+      <div className="flex min-h-screen items-center justify-center bg-fog">
+        <div className="text-center">
+          <span className="text-[11px] font-bold tracking-[0.12em] text-plum/30 uppercase">VELTO</span>
+          <Loader2 className="mx-auto mt-4 h-7 w-7 animate-spin text-emerald-600" />
+          <p className="mt-3 text-sm text-warmsilver">Загружаем диспетчерскую...</p>
+        </div>
+      </div>
     );
   }
 
   return (
-    <div className="min-h-screen pb-8">
-      <div className="border-b border-sand/80 bg-white/65 py-6 text-plum backdrop-blur-xl">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex flex-wrap items-center justify-between gap-4">
-          <div className="flex items-center gap-3">
-            <div className="rounded-2xl bg-sand p-3 text-pinterest shadow-[0_20px_40px_rgba(16,60,37,0.10)]">
-              <Users className="h-8 w-8" />
-            </div>
-            <div>
-              <h1 className="text-2xl font-bold">Диспетчерская</h1>
-              <p className="text-warmsilver text-sm">{userName}</p>
-            </div>
+    <div className="min-h-screen bg-fog pb-12">
+      {/* ── Top bar ─────────────────────────────────────────────────────── */}
+      <div className="sticky top-0 z-30 border-b border-sand bg-white">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex h-14 items-center justify-between">
+          <div className="flex items-center gap-6">
+            <span className="text-[13px] font-bold tracking-[0.08em] text-plum uppercase">VELTO</span>
+            <span className="hidden text-sm font-medium text-plum sm:block">Диспетчерская</span>
+            <span className="hidden text-sm text-warmsilver sm:block">· {userName}</span>
           </div>
-          <div className="flex items-center gap-2">
-            <Badge className="gap-1 border border-sand/80 bg-white/70 text-olive hover:bg-white">
-              {wsConnected ? (
-                <>
-                  <Wifi className="h-3 w-3" />
-                  GPS live
-                </>
-              ) : (
-                <>
-                  <WifiOff className="h-3 w-3" />
-                  GPS offline
-                </>
-              )}
-            </Badge>
-            <Button variant="secondary" size="sm" onClick={logout} className="gap-2">
-              <LogOut className="h-4 w-4" />
+          <div className="flex items-center gap-2.5">
+            <div className={`flex items-center gap-1.5 rounded-xl border px-3 py-1.5 text-xs font-medium ${wsConnected ? "border-emerald-200 bg-emerald-50 text-emerald-700" : "border-sand bg-fog text-warmsilver"}`}>
+              <span className={`h-1.5 w-1.5 rounded-full ${wsConnected ? "bg-emerald-500 animate-pulse" : "bg-warmsilver"}`} />
+              {wsConnected ? "GPS live" : "GPS offline"}
+            </div>
+            <button
+              type="button"
+              onClick={logout}
+              className="flex items-center gap-1.5 rounded-xl border border-sand bg-fog px-3 py-1.5 text-xs font-medium text-olive hover:bg-sand transition-colors"
+            >
+              <LogOut className="h-3.5 w-3.5" />
               Выйти
-            </Button>
+            </button>
           </div>
         </div>
       </div>
 
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 -mt-3">
-
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
-          <Card>
-            <CardContent className="pt-6">
-              <div className="flex items-center justify-between">
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-6">
+        {/* ── KPI strip ──────────────────────────────────────────────────── */}
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
+          {[
+            { label: "Водителей", value: drivers.length, sub: `${availableDrivers} свободно`, subColor: "text-emerald-600", icon: <Users className="h-5 w-5 text-warmsilver" /> },
+            { label: "Активных рейсов", value: activeRoutes.length, sub: `${routes.filter(r => r.status === "PLANNED").length} запланировано`, subColor: "text-olive", icon: <RouteIcon className="h-5 w-5 text-warmsilver" /> },
+            { label: "Доставлено", value: deliveredToday, sub: "всего завершено", subColor: "text-olive", icon: <CheckCircle className="h-5 w-5 text-warmsilver" /> },
+            { label: "Точек сети", value: locations.length, sub: `${warehouses.length} складов`, subColor: "text-olive", icon: <Warehouse className="h-5 w-5 text-warmsilver" /> },
+          ].map((stat) => (
+            <div key={stat.label} className="rounded-2xl border border-sand bg-white px-5 py-4 shadow-card">
+              <div className="flex items-start justify-between gap-2">
                 <div>
-                  <p className="text-xs text-gray-600">Водителей</p>
-                  <p className="text-2xl font-bold">{drivers.length}</p>
-                  <p className="text-xs text-emerald-600">
-                    {availableDrivers} свободно
-                  </p>
+                  <p className="text-xs text-warmsilver">{stat.label}</p>
+                  <p className="mt-1 text-2xl font-bold tracking-tight text-plum">{stat.value}</p>
+                  <p className={`mt-0.5 text-xs ${stat.subColor}`}>{stat.sub}</p>
                 </div>
-                <Users className="h-7 w-7 text-blue-500" />
+                {stat.icon}
               </div>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardContent className="pt-6">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-xs text-gray-600">Активных рейсов</p>
-                  <p className="text-2xl font-bold">{activeRoutes.length}</p>
-                </div>
-                <RouteIcon className="h-7 w-7 text-emerald-500" />
-              </div>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardContent className="pt-6">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-xs text-gray-600">Доставлено</p>
-                  <p className="text-2xl font-bold">{deliveredToday}</p>
-                </div>
-                <CheckCircle className="h-7 w-7 text-green-500" />
-              </div>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardContent className="pt-6">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-xs text-gray-600">Точек сети</p>
-                  <p className="text-2xl font-bold">{locations.length}</p>
-                </div>
-                <Warehouse className="h-7 w-7 text-orange-500" />
-              </div>
-            </CardContent>
-          </Card>
+            </div>
+          ))}
         </div>
 
-        <Tabs defaultValue="overview" className="space-y-6">
-          <Card className="shadow-sm">
-            <CardContent className="p-2">
-              <TabsList className="grid grid-cols-6 w-full">
-                <TabsTrigger value="overview">Обзор</TabsTrigger>
-                <TabsTrigger value="drivers">Водители</TabsTrigger>
-                <TabsTrigger value="routes">Маршруты</TabsTrigger>
-                <TabsTrigger value="maintenance">ТО</TabsTrigger>
-                <TabsTrigger value="locations">Сеть</TabsTrigger>
-              </TabsList>
-            </CardContent>
-          </Card>
+        <Tabs defaultValue="overview" className="space-y-5">
+          <div className="rounded-2xl border border-sand bg-white p-1.5 shadow-card">
+            <TabsList className="grid grid-cols-5 w-full h-auto gap-1 bg-transparent p-0">
+              {[
+                { value: "overview", label: "Обзор" },
+                { value: "drivers", label: "Водители" },
+                { value: "routes", label: "Маршруты" },
+                { value: "maintenance", label: "ТО" },
+                { value: "locations", label: "Сеть" },
+              ].map((tab) => (
+                <TabsTrigger
+                  key={tab.value}
+                  value={tab.value}
+                  className="rounded-xl py-2 text-sm data-[state=active]:bg-fog data-[state=active]:text-plum data-[state=active]:shadow-none data-[state=active]:font-semibold text-warmsilver font-medium"
+                >
+                  {tab.label}
+                </TabsTrigger>
+              ))}
+            </TabsList>
+          </div>
 
           <TabsContent value="overview" className="space-y-6">
             <div className="grid md:grid-cols-3 gap-6">

@@ -11,7 +11,7 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { LogOut } from "lucide-react";
+import { Loader2, LogOut } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 
 import DriverWorkspace from "@/components/driver/DriverWorkspace";
@@ -25,13 +25,7 @@ import dynamic from "next/dynamic";
 const DashboardPage = dynamic(
   () => import("@/app/dashboard/page"),
   {
-    loading: () => (
-      <main className="mx-auto flex min-h-screen max-w-7xl items-center px-4 py-8 md:px-6">
-        <div className="w-full rounded-[20px] border border-sand bg-white p-10 text-olive">
-          Загружаем диспетчерскую...
-        </div>
-      </main>
-    ),
+    loading: () => <LoadingScreen label="Загружаем диспетчерскую..." />,
     ssr: false,
   },
 );
@@ -71,46 +65,22 @@ export default function LkPage() {
   };
 
   if (!ready || !user) {
-    return (
-      <main className="mx-auto flex min-h-screen max-w-7xl items-center px-4 py-8 md:px-6">
-        <div className="w-full rounded-[20px] border border-sand bg-white p-10 text-olive">
-          Открываем личный кабинет...
-        </div>
-      </main>
-    );
+    return <LoadingScreen label="Открываем личный кабинет..." />;
   }
 
   // ── Кабинет водителя ──────────────────────────────────────────────────────
   if (user.role === "DRIVER") {
     if (driverLoading || !driverData) {
-      return (
-        <>
-          <div className="mx-auto flex w-full max-w-7xl justify-end px-4 pt-5 md:px-6">
-            <button
-              type="button"
-              onClick={handleLogout}
-              className="inline-flex items-center gap-2 rounded-2xl bg-sand px-4 py-2 text-sm text-olive transition hover:bg-warmlight"
-            >
-              <LogOut className="h-4 w-4" />
-              Выйти
-            </button>
-          </div>
-          <main className="mx-auto flex min-h-screen max-w-7xl items-center px-4 py-8 md:px-6">
-            <div className="w-full rounded-[20px] border border-sand bg-white p-10 text-olive">
-              Загружаем кабинет водителя...
-            </div>
-          </main>
-        </>
-      );
+      return <LoadingScreen label="Загружаем кабинет водителя..." onLogout={handleLogout} />;
     }
 
     return (
       <>
-        <div className="mx-auto flex w-full max-w-7xl justify-end px-4 pt-5 md:px-6">
+        <div className="flex w-full justify-end px-4 pt-4 md:px-6">
           <button
             type="button"
             onClick={handleLogout}
-            className="inline-flex items-center gap-2 rounded-2xl bg-sand px-4 py-2 text-sm text-olive transition hover:bg-warmlight"
+            className="inline-flex items-center gap-2 rounded-xl border border-sand bg-white px-3 py-2 text-sm text-olive shadow-card transition hover:bg-fog"
           >
             <LogOut className="h-4 w-4" />
             Выйти
@@ -128,4 +98,26 @@ export default function LkPage() {
 
   // ── Диспетчерская (ADMIN / DISPATCHER) ────────────────────────────────────
   return <DashboardPage />;
+}
+
+function LoadingScreen({ label, onLogout }: { label: string; onLogout?: () => void }) {
+  return (
+    <div className="flex min-h-screen flex-col items-center justify-center gap-5 bg-fog">
+      {onLogout && (
+        <button
+          type="button"
+          onClick={onLogout}
+          className="absolute right-4 top-4 inline-flex items-center gap-1.5 rounded-xl border border-sand bg-white px-3 py-2 text-sm text-olive shadow-card hover:bg-white/80"
+        >
+          <LogOut className="h-4 w-4" />
+          Выйти
+        </button>
+      )}
+      <span className="text-[11px] font-bold tracking-[0.12em] text-plum/40 uppercase select-none">
+        VELTO
+      </span>
+      <Loader2 className="h-7 w-7 animate-spin text-emerald-600" />
+      <p className="text-sm text-warmsilver">{label}</p>
+    </div>
+  );
 }
