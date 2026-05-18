@@ -11,7 +11,7 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
-import { IsInt, IsNumber, IsOptional, IsString } from 'class-validator';
+import { IsInt, IsNumber, IsOptional, IsPositive, IsString } from 'class-validator';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RoutesService } from './routes.service';
 
@@ -36,6 +36,16 @@ export class CreateRouteDto {
   @IsOptional()
   @IsString()
   telegramChatId?: string;
+
+  @IsOptional()
+  @IsNumber()
+  @IsPositive()
+  cargoWeightKg?: number;
+
+  @IsOptional()
+  @IsNumber()
+  @IsPositive()
+  cargoVolumeCbm?: number;
 }
 
 export class CreateQuickRouteDto {
@@ -142,6 +152,48 @@ export class RoutesController {
   @ApiOperation({ summary: 'Авто-назначение лучшего водителя на маршрут' })
   autoAssign(@Param('id', ParseIntPipe) id: number) {
     return this.routes.autoAssign(id);
+  }
+
+  @Get(':id/enroute-drivers')
+  @ApiOperation({ summary: 'Активные водители, способные забрать груз попутно' })
+  findEnRouteDrivers(@Param('id', ParseIntPipe) id: number) {
+    return this.routes.findEnRouteDrivers(id);
+  }
+
+  @Post('analytics/hub-suggest')
+  @ApiOperation({ summary: 'Предложить промежуточный хаб для дальнего рейса' })
+  suggestHub(
+    @Body() body: { startLat: number; startLon: number; endLat: number; endLon: number },
+  ) {
+    return this.routes.suggestHub(body.startLat, body.startLon, body.endLat, body.endLon);
+  }
+
+  @Post('analytics/consolidation')
+  @ApiOperation({ summary: 'Кандидаты для консолидации груза' })
+  getConsolidation(
+    @Body() body: { startLat: number; startLon: number; endLat: number; endLon: number; cargoWeightKg?: number; cargoVolumeCbm?: number },
+  ) {
+    return this.routes.getConsolidationCandidates(body);
+  }
+
+  @Get('analytics/zones')
+  @ApiOperation({ summary: 'Зоны водителей' })
+  getDriverZones() {
+    return this.routes.getDriverZones();
+  }
+
+  @Get('analytics/bottlenecks')
+  @ApiOperation({ summary: 'Исторические узкие места' })
+  getBottlenecks() {
+    return this.routes.getBottlenecks();
+  }
+
+  @Post('analytics/departure-risk')
+  @ApiOperation({ summary: 'Предиктивный риск отправки' })
+  getDepartureRisk(
+    @Body() body: { startLat: number; startLon: number; endLat: number; endLon: number },
+  ) {
+    return this.routes.getDepartureRisk(body.startLat, body.startLon, body.endLat, body.endLon);
   }
 
   @Get(':id/eta')

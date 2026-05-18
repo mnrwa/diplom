@@ -385,7 +385,8 @@ export default function DriverAdminPage() {
                   lines={mapLines}
                   center={mapCenter}
                   fitToData={!mapCenter}
-                  className="h-full w-full"
+                  className="h-full w-full rounded-none"
+                  containerClassName="h-full rounded-none border-0 shadow-none"
                 />
               </div>
             </div>

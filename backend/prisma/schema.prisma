@@ -65,6 +65,8 @@ model Vehicle {
   mileageKm            Float         @default(0)
   lastServiceKm        Float         @default(0)
   fuelEfficiencyL100km Float         @default(25.0)
+  maxWeightKg          Float         @default(3500)
+  maxVolumeCbm         Float         @default(20.0)
   createdAt            DateTime      @default(now())
   routes        Route[]
   gpsLogs       GpsLog[]
@@ -119,6 +121,8 @@ model Route {
   telegramChatId String?
   trackingToken  String?       @unique
   fuelCostRub    Float?
+  cargoWeightKg  Float?
+  cargoVolumeCbm Float?
   createdAt      DateTime      @default(now())
   updatedAt      DateTime      @updatedAt
   vehicle        Vehicle?      @relation(fields: [vehicleId], references: [id])

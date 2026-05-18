@@ -331,7 +331,7 @@ export default function HomePage() {
 
               {/* Subtext */}
               <p className="text-lg text-warmsilver max-w-lg leading-relaxed">
-                AI-планирование маршрутов, GPS-отслеживание каждые 4 секунды
+                Планирование маршрутов, GPS-отслеживание каждые 4 секунды
                 и встроенный грузовой маркетплейс — всё в одной платформе.
               </p>
 
@@ -434,7 +434,7 @@ export default function HomePage() {
                   <div className="flex items-start gap-2">
                     <BrainCircuit className="h-4 w-4 text-amber-500 shrink-0 mt-0.5" />
                     <p className="text-[11px] text-olive leading-snug">
-                      <span className="font-semibold text-amber-600">AI:</span> пробка на М-5, маршрут перестроен +12 мин
+                      пробка на М-5, маршрут перестроен +12 мин
                     </p>
                   </div>
                 </div>
@@ -652,7 +652,7 @@ export default function HomePage() {
             {[
               {
                 icon: <BrainCircuit className="h-5 w-5 text-emerald-600" />,
-                title: "AI прогноз ETA",
+                title: "Прогноз ETA",
                 desc: "XGBoost-модель учитывает погоду, загруженность трасс, время суток и день недели для точного прогноза прибытия.",
                 tag: "Точность ±12 мин",
               },
@@ -840,7 +840,7 @@ export default function HomePage() {
             <div>
               <p className="text-xs font-semibold text-white/40 uppercase tracking-widest mb-4">Платформа</p>
               <ul className="space-y-2.5">
-                {["Трекинг заказов", "GPS-мониторинг", "AI ETA-прогноз", "Маркетплейс", "Личный кабинет"].map((item) => (
+                {["Трекинг заказов", "GPS-мониторинг", "ETA-прогноз", "Маркетплейс", "Личный кабинет"].map((item) => (
                   <li key={item}>
                     <a href="#" className="text-sm text-white/60 hover:text-white transition-colors">
                       {item}
@@ -868,7 +868,7 @@ export default function HomePage() {
 
           <div className="mt-10 pt-8 border-t border-white/10 flex flex-col sm:flex-row items-center justify-between gap-3">
             <p className="text-xs text-white/40">© 2026 ООО «ВЕЛТО». Все права защищены.</p>
-            <p className="text-xs text-white/40">ИНН 6671234567 · ОГРН 1216600012345</p>
+            {/* <p className="text-xs text-white/40">ИНН 6671234567 · ОГРН 1216600012345</p> */}
           </div>
         </div>
       </footer>

@@ -129,31 +129,29 @@ export class DemoDataService implements OnModuleInit {
 
     */
 
-    const riskEventsCount = await this.prisma.riskEvent.count();
-    if (riskEventsCount === 0) {
-      await this.prisma.riskEvent.createMany({
-        data: [
-          {
-            type: 'ROAD_WORK',
-            title: 'Ремонт полосы у М-7',
-            description: 'Ограничение скорости и сужение правой полосы на маршруте в сторону Казани.',
-            severity: 0.54,
-            source: 'demo/telegram',
-            lat: 55.74,
-            lon: 49.15,
-          },
-          {
-            type: 'WEATHER',
-            title: 'Порывистый ветер на восточном коридоре',
-            description: 'AI-модуль рекомендует увеличить временной буфер для рейсов Сибири.',
-            severity: 0.43,
-            source: 'demo/weather',
-            lat: 56.01,
-            lon: 92.85,
-          },
+    await this.removeDemoRiskEvents();
+  }
+
+  private async removeDemoRiskEvents() {
+    await this.prisma.riskEvent.deleteMany({
+      where: {
+        OR: [
+          { source: { startsWith: 'demo/' } },
+          { title: { contains: 'Ремонт полосы у М-7' } },
+          { title: { contains: 'Порывистый ветер на восточном коридоре' } },
         ],
-      });
-    }
+      },
+    });
+
+    await this.prisma.driverNews.deleteMany({
+      where: {
+        OR: [
+          { channel: { startsWith: 'demo/' } },
+          { title: { contains: 'Ремонт полосы у М-7' } },
+          { title: { contains: 'Порывистый ветер на восточном коридоре' } },
+        ],
+      },
+    });
   }
 
   private async ensureAdmin() {

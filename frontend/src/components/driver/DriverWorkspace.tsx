@@ -28,16 +28,19 @@ import { ChatPanel } from "@/components/ChatPanel";
 import {
   ArrowLeft,
   BadgeAlert,
+  CheckCircle2,
   Clock3,
   Gauge,
   MapPin,
   Navigation,
   NavigationOff,
   Newspaper,
+  PackageCheck,
   Route,
   Signal,
   Truck,
   UserRound,
+  Warehouse,
   Wifi,
   WifiOff,
 } from "lucide-react";
@@ -314,6 +317,15 @@ export default function DriverWorkspace({
             </p>
           )}
         </section>
+      )}
+
+      {/* Route progress tracker */}
+      {driver.activeRoute && (
+        <RouteProgressPanel
+          route={driver.activeRoute}
+          livePosition={livePosition}
+          mode={mode}
+        />
       )}
 
       <section className="mt-4 grid gap-4 lg:grid-cols-[1.08fr_0.92fr]">
@@ -598,4 +610,194 @@ function formatPositionUpdatedAt(timestamp: string) {
   const diffMs = Date.now() - new Date(timestamp).getTime();
   if (diffMs < 60_000) return "меньше минуты назад";
   return `${Math.round(diffMs / 60_000)} мин назад`;
+}
+
+function haversineKm(lat1: number, lon1: number, lat2: number, lon2: number) {
+  const R = 6371;
+  const dLat = ((lat2 - lat1) * Math.PI) / 180;
+  const dLon = ((lon2 - lon1) * Math.PI) / 180;
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos((lat1 * Math.PI) / 180) *
+      Math.cos((lat2 * Math.PI) / 180) *
+      Math.sin(dLon / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+function fmtEta(min: number) {
+  if (min < 60) return `${min} мин`;
+  const h = Math.floor(min / 60);
+  const m = min % 60;
+  return m > 0 ? `${h} ч ${m} мин` : `${h} ч`;
+}
+
+type ActiveRoute = NonNullable<DriverDetail["activeRoute"]>;
+type LivePos = { lat: number; lon: number; speed?: number | null; timestamp: string } | null;
+
+function RouteProgressPanel({
+  route,
+  livePosition,
+  mode,
+}: {
+  route: ActiveRoute;
+  livePosition: LivePos;
+  mode: "admin" | "driver";
+}) {
+  const isCompleted = route.status === "COMPLETED";
+  const isActive = route.status === "ACTIVE";
+  const isCancelled = route.status === "CANCELLED";
+
+  let progress = 0;
+  if (isCompleted) {
+    progress = 1;
+  } else if (livePosition && route.startPoint && route.endPoint) {
+    const total = haversineKm(
+      route.startPoint.lat, route.startPoint.lon,
+      route.endPoint.lat, route.endPoint.lon,
+    );
+    const done = haversineKm(
+      route.startPoint.lat, route.startPoint.lon,
+      livePosition.lat, livePosition.lon,
+    );
+    progress = total > 0 ? Math.min(done / total, 1) : 0;
+  }
+
+  const STATUS_LABEL: Record<string, string> = {
+    PLANNED: "Запланирован",
+    ACTIVE: "В пути",
+    COMPLETED: "Доставлено",
+    CANCELLED: "Отменён",
+    RECALCULATING: "Пересчёт",
+  };
+  const STATUS_STYLE: Record<string, string> = {
+    PLANNED: "bg-amber-100 text-amber-800",
+    ACTIVE: "bg-emerald-100 text-emerald-800",
+    COMPLETED: "bg-green-100 text-green-800",
+    CANCELLED: "bg-red-100 text-red-800",
+    RECALCULATING: "bg-sky-100 text-sky-800",
+  };
+
+  return (
+    <section className="mt-4 rounded-[28px] border border-sand bg-white p-6">
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <p className="text-xs uppercase tracking-[0.3em] text-warmsilver">
+            {mode === "admin" ? "Отслеживание" : "Мой маршрут"}
+          </p>
+          <h2 className="mt-2 text-xl font-semibold text-plum">{route.name}</h2>
+        </div>
+        <span className={`mt-1 inline-flex shrink-0 items-center gap-2 rounded-full px-3 py-1 text-sm font-medium ${STATUS_STYLE[route.status] ?? "bg-gray-100 text-gray-700"}`}>
+          {isActive && <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-500" />}
+          {STATUS_LABEL[route.status] ?? route.status}
+        </span>
+      </div>
+
+      <div className="mt-5 grid gap-6 lg:grid-cols-[1fr_280px]">
+        {/* Timeline */}
+        <ol>
+          <TrackerStep
+            done={isActive || isCompleted}
+            active={false}
+            icon={<Warehouse className="h-3.5 w-3.5" />}
+            label="Отправление"
+            detail={route.startPoint ? `${route.startPoint.name}, ${route.startPoint.city}` : "—"}
+            last={false}
+          />
+          <TrackerStep
+            done={isCompleted}
+            active={isActive}
+            icon={<Navigation className="h-3.5 w-3.5" />}
+            label="В пути"
+            detail={
+              livePosition
+                ? `${livePosition.lat.toFixed(4)}, ${livePosition.lon.toFixed(4)}${typeof livePosition.speed === "number" ? ` · ${Math.round(livePosition.speed)} км/ч` : ""}`
+                : isCancelled ? "Отменён" : "Ожидание отправки"
+            }
+            last={false}
+          />
+          <TrackerStep
+            done={isCompleted}
+            active={false}
+            icon={<PackageCheck className="h-3.5 w-3.5" />}
+            label="Доставка"
+            detail={route.endPoint ? `${route.endPoint.name}, ${route.endPoint.city}` : "—"}
+            last
+          />
+        </ol>
+
+        {/* Stats */}
+        <div className="space-y-3">
+          {!isCancelled && (
+            <div>
+              <div className="mb-1.5 flex items-center justify-between text-xs text-warmsilver">
+                <span>Прогресс маршрута</span>
+                <span className="font-semibold text-plum">{Math.round(progress * 100)}%</span>
+              </div>
+              <div className="h-2 w-full overflow-hidden rounded-full bg-sand">
+                <div
+                  className="h-full rounded-full bg-gradient-to-r from-plum to-purple-500 transition-all duration-700"
+                  style={{ width: `${Math.round(progress * 100)}%` }}
+                />
+              </div>
+            </div>
+          )}
+
+          <div className="grid grid-cols-2 gap-2.5">
+            <MiniStat icon={<Clock3 className="h-3.5 w-3.5 text-plum" />} label="ETA" value={route.estimatedTime ? fmtEta(route.estimatedTime) : "—"} />
+            <MiniStat icon={<Gauge className="h-3.5 w-3.5 text-sky-500" />} label="Скорость" value={typeof livePosition?.speed === "number" ? `${Math.round(livePosition.speed)} км/ч` : "—"} />
+            <MiniStat icon={<MapPin className="h-3.5 w-3.5 text-emerald-500" />} label="Расстояние" value={route.distance ? `${route.distance.toFixed(0)} км` : "—"} />
+            <MiniStat icon={<Navigation className="h-3.5 w-3.5 text-amber-500" />} label="Риск" value={route.riskScore != null ? `${Math.round(route.riskScore * 100)}%` : "—"} />
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function TrackerStep({
+  done,
+  active,
+  icon,
+  label,
+  detail,
+  last,
+}: {
+  done: boolean;
+  active: boolean;
+  icon: ReactNode;
+  label: string;
+  detail: string;
+  last: boolean;
+}) {
+  return (
+    <li className="flex gap-4">
+      <div className="flex flex-col items-center">
+        <div
+          className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full border-2 transition-colors
+            ${done ? "border-emerald-500 bg-emerald-500 text-white" : active ? "border-plum bg-plum text-white" : "border-sand bg-fog text-warmsilver"}`}
+        >
+          {done ? <CheckCircle2 className="h-3.5 w-3.5" /> : active ? <span className="h-2 w-2 animate-pulse rounded-full bg-white" /> : icon}
+        </div>
+        {!last && (
+          <div className={`mt-1 w-0.5 flex-1 min-h-[20px] ${done || active ? "bg-emerald-200" : "bg-sand"}`} />
+        )}
+      </div>
+      <div className="pb-4">
+        <p className={`text-sm font-semibold ${active ? "text-plum" : done ? "text-emerald-700" : "text-olive"}`}>{label}</p>
+        <p className="mt-0.5 text-xs text-warmsilver">{detail}</p>
+      </div>
+    </li>
+  );
+}
+
+function MiniStat({ icon, label, value }: { icon: ReactNode; label: string; value: string }) {
+  return (
+    <div className="flex items-center gap-2 rounded-2xl border border-sand bg-fog px-3 py-2.5">
+      {icon}
+      <div>
+        <p className="text-[10px] uppercase tracking-widest text-warmsilver">{label}</p>
+        <p className="mt-0.5 text-sm font-bold text-plum">{value}</p>
+      </div>
+    </div>
+  );
 }

@@ -101,7 +101,7 @@ export function EtaCalculator() {
 
   return (
     <div className="rounded-[28px] border border-sand bg-white p-6">
-      <p className="text-xs uppercase tracking-[0.32em] text-warmsilver">AI · OSRM · Погода</p>
+      <p className="text-xs uppercase tracking-[0.32em] text-warmsilver">OSRM · Погода · Дороги</p>
       <h2 className="mt-2 text-2xl font-semibold text-plum">Расчёт времени доставки</h2>
       <p className="mt-1 text-sm text-olive">Учитываются: дорожная сеть, время суток, погода и дорожные события</p>
 

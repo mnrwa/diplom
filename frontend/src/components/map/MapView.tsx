@@ -1,6 +1,6 @@
 "use client";
 
-import { LocateFixed, Maximize2, Minus, Plus } from "lucide-react";
+import { CloudRain, LocateFixed, Maximize2, Minus, Plus, Wind } from "lucide-react";
 import maplibregl, {
   type Map as MapLibreMap,
   type Marker as MapLibreMarker,
@@ -44,14 +44,16 @@ export type MapSelection = {
   label?: string;
 };
 
-import type { HeatmapCell } from "@/lib/api";
+import type { HeatmapCell, WeatherHeatmapCell } from "@/lib/api";
 
 type MapViewProps = {
   lines?: MapLine[];
   points?: MapPoint[];
   heatmapCells?: HeatmapCell[] | null;
+  weatherHeatmapCells?: WeatherHeatmapCell[] | null;
   center?: [number, number];
   className?: string;
+  containerClassName?: string;
   selectable?: boolean;
   selectedCoordinates?: [number, number] | null;
   highlightedPointIds?: string[];
@@ -65,12 +67,13 @@ type DgisModule = any;
 
 type DgisMarkerRecord = {
   marker: any;
-  element: HTMLButtonElement;
+  element: HTMLElement;
 };
 
 type FallbackMarkerRecord = {
   marker: MapLibreMarker;
-  element: HTMLButtonElement;
+  element: HTMLElement;
+  popup: maplibregl.Popup;
 };
 
 type DgisRuntime = {
@@ -102,8 +105,10 @@ export default function MapView({
   lines = [],
   points = [],
   heatmapCells = null,
+  weatherHeatmapCells = null,
   center,
   className = "h-[420px] w-full rounded-[28px]",
+  containerClassName,
   selectable = false,
   selectedCoordinates = null,
   highlightedPointIds = [],
@@ -390,6 +395,12 @@ export default function MapView({
 
   useEffect(() => {
     const runtime = runtimeRef.current;
+    if (!runtime || !ready || runtime.kind !== "fallback") return;
+    syncFallbackWeatherHeatmap(runtime, weatherHeatmapCells);
+  }, [weatherHeatmapCells, ready]);
+
+  useEffect(() => {
+    const runtime = runtimeRef.current;
     if (!runtime || !ready || !fitToData || !boundsPayload.length) return;
 
     // Avoid refitting on every GPS tick: refit only when the set of objects changes.
@@ -457,7 +468,7 @@ export default function MapView({
   };
 
   return (
-    <div className="relative overflow-hidden rounded-[28px] border border-sand/80 bg-white/65 shadow-[0_28px_80px_rgba(148,163,184,0.18)] backdrop-blur-xl">
+    <div className={`relative overflow-hidden rounded-[28px] border border-sand/80 shadow-card${containerClassName ? ` ${containerClassName}` : ""}`} style={{ contain: "layout style paint" }}>
       <div ref={hostRef} className={className} />
 
       <div className="pointer-events-none absolute bottom-4 right-4 z-20 flex flex-col gap-2">
@@ -473,9 +484,71 @@ export default function MapView({
         <ControlButton label="Моё местоположение" onClick={handleLocate}>
           <LocateFixed className="h-4 w-4" />
         </ControlButton>
-      </div>
-    </div>
+	      </div>
+	      {weatherHeatmapCells && weatherHeatmapCells.length > 0 ? (
+	        <div className="pointer-events-none absolute left-4 top-4 z-20 max-w-[220px] rounded-2xl border border-sky-100 bg-white/92 px-3 py-2 text-xs text-slate-700 shadow-[0_18px_40px_rgba(15,23,42,0.14)] backdrop-blur">
+	          <div className="flex items-center gap-2 font-semibold text-slate-900">
+	            <CloudRain className="h-3.5 w-3.5 text-sky-600" />
+	            Погодная карта
+	          </div>
+	          <div className="mt-2 flex items-center gap-2">
+	            <span className="h-2.5 w-8 rounded-full bg-sky-300" />
+	            <span>осадки</span>
+	            <span className="h-2.5 w-8 rounded-full bg-orange-400" />
+	            <span>риск</span>
+	          </div>
+	          <div className="mt-1 flex items-center gap-1 text-[11px] text-slate-500">
+	            <Wind className="h-3 w-3" />
+	            ветер усиливает интенсивность слоя
+	          </div>
+	        </div>
+	      ) : null}
+	    </div>
   );
+}
+
+function ensureMapStyles() {
+  if (typeof document === "undefined") return;
+  if (document.getElementById("velto-map-styles")) return;
+  const style = document.createElement("style");
+  style.id = "velto-map-styles";
+  style.textContent = `
+    @keyframes velto-ping {
+      0%   { transform: scale(1);   opacity: 0.55; }
+      100% { transform: scale(2.6); opacity: 0; }
+    }
+    .velto-pulse-a {
+      position: absolute; inset: -9px; border-radius: 50%;
+      animation: velto-ping 2.2s ease-out infinite;
+      pointer-events: none;
+    }
+    .velto-pulse-b {
+      position: absolute; inset: -9px; border-radius: 50%;
+      animation: velto-ping 2.2s ease-out 0.75s infinite;
+      pointer-events: none;
+    }
+    .maplibregl-popup-content {
+      padding: 8px 12px !important;
+      border-radius: 14px !important;
+      border: 1px solid #E8E2D8 !important;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.10) !important;
+      font-family: inherit !important;
+      min-width: 140px;
+    }
+    .maplibregl-popup-tip { display: none !important; }
+    .maplibregl-popup { pointer-events: none; }
+  `;
+  document.head.appendChild(style);
+}
+
+function buildPopupHtml(point: MapPoint): string {
+  const speedLine = point.speed != null
+    ? `<p style="color:#059669;font-size:11px;margin:2px 0 0">${Math.round(point.speed)} км/ч</p>`
+    : "";
+  const subLine = point.subtitle
+    ? `<p style="color:#948C84;font-size:11px;margin:2px 0 0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:160px">${point.subtitle}</p>`
+    : "";
+  return `<div style="padding:2px 0"><p style="font-weight:600;color:#1A1916;font-size:13px;margin:0;white-space:nowrap">${point.title}</p>${subLine}${speedLine}</div>`;
 }
 
 function initFallbackMap(
@@ -537,6 +610,8 @@ function initFallbackMap(
       });
     }
   });
+
+  ensureMapStyles();
 
   runtimeRef.current = {
     kind: "fallback",
@@ -733,6 +808,7 @@ function syncFallbackMarkers(
 
   runtime.markers.forEach((record, id) => {
     if (!nextIds.has(id)) {
+      record.popup.remove();
       record.marker.remove();
       runtime.markers.delete(id);
     }
@@ -744,6 +820,10 @@ function syncFallbackMarkers(
 
     if (existing) {
       existing.marker.setLngLat([point.longitude, point.latitude]);
+      existing.popup.setLngLat([point.longitude, point.latitude]);
+      if (existing.popup.isOpen()) {
+        existing.popup.setHTML(buildPopupHtml(point));
+      }
       hydrateMarkerElement(existing.element, point, highlighted);
       bindMarkerInteraction(
         existing.element,
@@ -764,14 +844,39 @@ function syncFallbackMarkers(
       onPointClickRef,
     );
 
-    runtime.markers.set(point.id, {
-      marker: new maplibregl.Marker({
-        element,
-        anchor: "center",
-      })
-        .setLngLat([point.longitude, point.latitude])
-        .addTo(runtime.map),
+    // Native MapLibre Popup — moves with the canvas, no lag on zoom/pan
+    const popup = new maplibregl.Popup({
+      closeButton: false,
+      closeOnClick: false,
+      anchor: "bottom",
+      offset: [0, -30],
+      maxWidth: "220px",
+    }).setHTML(buildPopupHtml(point));
+
+    element.addEventListener("mouseenter", () => {
+      popup.setLngLat([point.longitude, point.latitude]).addTo(runtime.map);
+    });
+    element.addEventListener("mouseleave", () => popup.remove());
+
+    const mlMarker = new maplibregl.Marker({
       element,
+      anchor: "center",
+    })
+      .setLngLat([point.longitude, point.latitude])
+      .addTo(runtime.map);
+
+    // Smooth GPS-update transitions — only for moving markers
+    if (point.kind === "driver" || point.kind === "vehicle") {
+      setTimeout(() => {
+        const wrapper = element.parentElement;
+        if (wrapper) wrapper.style.transition = "transform 0.85s linear";
+      }, 120);
+    }
+
+    runtime.markers.set(point.id, {
+      marker: mlMarker,
+      element,
+      popup,
     });
   });
 
@@ -888,7 +993,7 @@ function syncFallbackSelectionMarker(
 }
 
 function bindMarkerInteraction(
-  element: HTMLButtonElement,
+  element: HTMLElement,
   point: MapPoint,
   selectable: boolean,
   onSelectRef: MutableRefObject<MapViewProps["onSelect"]>,
@@ -925,7 +1030,10 @@ function clearRuntimeObjects(runtime: Runtime) {
     return;
   }
 
-  runtime.markers.forEach((record) => record.marker.remove());
+  runtime.markers.forEach((record) => {
+    (record as FallbackMarkerRecord).popup?.remove();
+    record.marker.remove();
+  });
   runtime.selectionMarker?.remove();
 
   if (!runtime.map.isStyleLoaded()) {
@@ -938,15 +1046,22 @@ function clearRuntimeObjects(runtime: Runtime) {
   runtime.lineIds.forEach((lineId) => removeRouteLine(runtime, lineId));
   cleanupOrphanRouteArtifacts(runtime, new Set());
 
-  if (runtime.hasCluster) {
-    [CLUSTER_COUNT_LAYER, CLUSTER_LAYER].forEach((id) => {
-      try { if (runtime.map.getLayer(id)) runtime.map.removeLayer(id); } catch { /* ok */ }
-    });
-    try { if (runtime.map.getSource(CLUSTER_SOURCE)) runtime.map.removeSource(CLUSTER_SOURCE); } catch { /* ok */ }
-    runtime.hasCluster = false;
-  }
+	  if (runtime.hasCluster) {
+	    [CLUSTER_COUNT_LAYER, CLUSTER_LAYER].forEach((id) => {
+	      try { if (runtime.map.getLayer(id)) runtime.map.removeLayer(id); } catch { /* ok */ }
+	    });
+	    try { if (runtime.map.getSource(CLUSTER_SOURCE)) runtime.map.removeSource(CLUSTER_SOURCE); } catch { /* ok */ }
+	    runtime.hasCluster = false;
+	  }
 
-  runtime.markers.clear();
+	  [WEATHER_CIRCLE_LAYER, WEATHER_HEATMAP_LAYER, ROUTE_LOAD_LAYER, ROUTE_LOAD_LAYER2].forEach((id) => {
+	    try { if (runtime.map.getLayer(id)) runtime.map.removeLayer(id); } catch { /* ok */ }
+	  });
+	  [WEATHER_HEATMAP_SOURCE, ROUTE_LOAD_SOURCE].forEach((id) => {
+	    try { if (runtime.map.getSource(id)) runtime.map.removeSource(id); } catch { /* ok */ }
+	  });
+	
+	  runtime.markers.clear();
   runtime.lineIds.clear();
   runtime.selectionMarker = null;
 }
@@ -1038,6 +1153,9 @@ const CLUSTER_COUNT_LAYER  = "velto-cluster-counts";
 const ROUTE_LOAD_SOURCE = "velto-route-load-source";
 const ROUTE_LOAD_LAYER  = "velto-route-load-layer";
 const ROUTE_LOAD_LAYER2 = "velto-route-load-layer-outline";
+const WEATHER_HEATMAP_SOURCE = "velto-weather-heatmap-source";
+const WEATHER_HEATMAP_LAYER = "velto-weather-heatmap-layer";
+const WEATHER_CIRCLE_LAYER = "velto-weather-circle-layer";
 
 function intensityToColor(intensity: number): string {
   if (intensity < 0.25) return "#22c55e";  // green — free
@@ -1130,6 +1248,93 @@ function syncFallbackHeatmap(runtime: FallbackRuntime, cells: HeatmapCell[] | nu
   } catch { /* already added */ }
 }
 
+function syncFallbackWeatherHeatmap(
+  runtime: FallbackRuntime,
+  cells: WeatherHeatmapCell[] | null | undefined,
+) {
+  const map = runtime.map;
+  if (!map.isStyleLoaded()) {
+    map.once("style.load", () => syncFallbackWeatherHeatmap(runtime, cells));
+    return;
+  }
+
+  const cleanup = () => {
+    [WEATHER_CIRCLE_LAYER, WEATHER_HEATMAP_LAYER].forEach((id) => {
+      try { if (map.getLayer(id)) map.removeLayer(id); } catch { /* ok */ }
+    });
+    try { if (map.getSource(WEATHER_HEATMAP_SOURCE)) map.removeSource(WEATHER_HEATMAP_SOURCE); } catch { /* ok */ }
+  };
+
+  if (!cells || cells.length === 0) {
+    cleanup();
+    return;
+  }
+
+  const geojson = {
+    type: "FeatureCollection",
+    features: cells.map((cell) => ({
+      type: "Feature",
+      geometry: { type: "Point", coordinates: [cell.lon, cell.lat] },
+      properties: {
+        intensity: Math.max(0.05, Math.min(1, cell.intensity || cell.risk_score || 0)),
+        precipitation: cell.precipitation_strength ?? 0,
+        wind: cell.wind_speed ?? 0,
+        temperature: cell.temperature ?? null,
+        condition: cell.condition ?? "",
+      },
+    })),
+  };
+
+  cleanup();
+
+  try {
+    map.addSource(WEATHER_HEATMAP_SOURCE, { type: "geojson", data: geojson as any });
+    map.addLayer({
+      id: WEATHER_HEATMAP_LAYER,
+      type: "heatmap",
+      source: WEATHER_HEATMAP_SOURCE,
+      maxzoom: 11,
+      paint: {
+        "heatmap-weight": ["interpolate", ["linear"], ["get", "intensity"], 0, 0, 1, 1],
+        "heatmap-intensity": ["interpolate", ["linear"], ["zoom"], 3, 0.8, 9, 1.8],
+        "heatmap-radius": ["interpolate", ["linear"], ["zoom"], 3, 34, 9, 68],
+        "heatmap-opacity": 0.62,
+        "heatmap-color": [
+          "interpolate",
+          ["linear"],
+          ["heatmap-density"],
+          0, "rgba(56,189,248,0)",
+          0.18, "rgba(125,211,252,0.58)",
+          0.42, "rgba(14,165,233,0.68)",
+          0.68, "rgba(251,146,60,0.74)",
+          1, "rgba(239,68,68,0.82)",
+        ],
+      },
+    });
+    map.addLayer({
+      id: WEATHER_CIRCLE_LAYER,
+      type: "circle",
+      source: WEATHER_HEATMAP_SOURCE,
+      minzoom: 6,
+      paint: {
+        "circle-radius": ["interpolate", ["linear"], ["get", "intensity"], 0, 7, 1, 18],
+        "circle-color": [
+          "interpolate",
+          ["linear"],
+          ["get", "intensity"],
+          0, "#7dd3fc",
+          0.35, "#38bdf8",
+          0.65, "#fb923c",
+          1, "#ef4444",
+        ],
+        "circle-opacity": 0.52,
+        "circle-stroke-width": 1,
+        "circle-stroke-color": "rgba(255,255,255,0.85)",
+      },
+    });
+  } catch { /* already added */ }
+}
+
 function destroyRuntime(runtime: Runtime | null) {
   if (!runtime) return;
 
@@ -1178,7 +1383,12 @@ function fitToBounds(runtime: Runtime, coordinates: [number, number][]) {
   });
 }
 
-function buildMarkerElement(point: MapPoint, highlighted: boolean) {
+function buildMarkerElement(point: MapPoint, highlighted: boolean): HTMLElement {
+  if (point.kind === "driver" || point.kind === "vehicle") {
+    const el = document.createElement("div");
+    hydrateMarkerElement(el, point, highlighted);
+    return el;
+  }
   const marker = document.createElement("button");
   marker.type = "button";
   hydrateMarkerElement(marker, point, highlighted);
@@ -1186,27 +1396,53 @@ function buildMarkerElement(point: MapPoint, highlighted: boolean) {
 }
 
 function hydrateMarkerElement(
-  marker: HTMLButtonElement,
+  marker: HTMLElement,
   point: MapPoint,
   highlighted: boolean,
 ) {
-  marker.className = [
+  if (point.kind === "driver" || point.kind === "vehicle") {
+    const isVehicle = point.kind === "vehicle";
+    const bg = isVehicle ? "bg-emerald-600" : "bg-emerald-500";
+    const pulse = isVehicle ? "rgba(5,150,105,0.35)" : "rgba(16,185,129,0.35)";
+    marker.className = [
+      "relative grid place-items-center rounded-full",
+      "h-12 w-12 border-2 border-white",
+      bg,
+      "text-white",
+      "shadow-[0_4px_20px_rgba(16,185,129,0.45)]",
+      "transition-shadow hover:shadow-[0_4px_28px_rgba(16,185,129,0.7)]",
+      highlighted ? "ring-4 ring-white/80 ring-offset-2 ring-offset-emerald-500" : "",
+    ].filter(Boolean).join(" ");
+    marker.style.overflow = "visible";
+    marker.setAttribute("aria-label", [
+      point.title,
+      point.subtitle,
+      point.speed != null ? `${Math.round(point.speed)} км/ч` : null,
+    ].filter(Boolean).join(" · "));
+
+    const truckIcon = `<svg xmlns="http://www.w3.org/2000/svg" width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="3" width="15" height="13" rx="1"/><path d="M16 8h4l3 5v3h-7V8z"/><circle cx="5.5" cy="18.5" r="2.5"/><circle cx="18.5" cy="18.5" r="2.5"/></svg>`;
+    const personIcon = `<svg xmlns="http://www.w3.org/2000/svg" width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M6 20v-2a6 6 0 0 1 12 0v2"/></svg>`;
+
+    marker.innerHTML = `
+      <span class="velto-pulse-a" style="background:${pulse};"></span>
+      <span class="velto-pulse-b" style="background:${pulse};"></span>
+      <span style="position:relative;z-index:1;pointer-events:none;display:flex;align-items:center;justify-content:center;">${isVehicle ? truckIcon : personIcon}</span>
+    `;
+    return;
+  }
+
+  // Static markers for warehouse / pickup
+  (marker as HTMLButtonElement).className = [
     "group",
     "grid h-11 w-11 place-items-center rounded-[18px] border border-white/80",
     markerTone(point.kind),
     highlighted ? "ring-4 ring-sky-200" : "",
     "shadow-[0_18px_36px_rgba(15,23,42,0.18)] transition hover:scale-[1.03]",
-  ]
-    .filter(Boolean)
-    .join(" ");
+  ].filter(Boolean).join(" ");
   marker.setAttribute("aria-label", point.title);
   marker.style.fontSize = "16px";
   marker.style.lineHeight = "1";
-  if (point.kind === "driver") {
-    marker.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M6 20v-2a6 6 0 0 1 12 0v2"/></svg>`;
-  } else if (point.kind === "vehicle") {
-    marker.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="3" width="15" height="13" rx="1"/><path d="M16 8h4l3 5v3h-7V8z"/><circle cx="5.5" cy="18.5" r="2.5"/><circle cx="18.5" cy="18.5" r="2.5"/></svg>`;
-  } else if (point.kind === "warehouse") {
+  if (point.kind === "warehouse") {
     marker.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>`;
   } else {
     marker.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>`;

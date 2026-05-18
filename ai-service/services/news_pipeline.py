@@ -684,6 +684,35 @@ class NewsStorage:
             connection.commit()
             return cursor.rowcount or 0
 
+    def delete_items_for_source_ids(self, source_ids: list[str]) -> int:
+        clean_source_ids = [str(source_id).strip() for source_id in source_ids if str(source_id).strip()]
+        if not clean_source_ids:
+            return 0
+
+        placeholders = ",".join("?" for _ in clean_source_ids)
+        with self._lock, self._connect() as connection:
+            cursor = connection.execute(
+                f"DELETE FROM news_items WHERE source_id IN ({placeholders})",
+                tuple(clean_source_ids),
+            )
+            connection.commit()
+            return cursor.rowcount or 0
+
+    def delete_items_by_source_prefixes(self, prefixes: list[str]) -> int:
+        clean_prefixes = [str(prefix).strip() for prefix in prefixes if str(prefix).strip()]
+        if not clean_prefixes:
+            return 0
+
+        conditions = " OR ".join("source LIKE ?" for _ in clean_prefixes)
+        params = tuple(f"{prefix}%" for prefix in clean_prefixes)
+        with self._lock, self._connect() as connection:
+            cursor = connection.execute(
+                f"DELETE FROM news_items WHERE {conditions}",
+                params,
+            )
+            connection.commit()
+            return cursor.rowcount or 0
+
     def get_last_fetched_at(self, source_id: str) -> datetime | None:
         with self._lock, self._connect() as connection:
             row = connection.execute(
@@ -770,6 +799,7 @@ class NewsCollector:
         self._running = True
         self.started_at = utc_now()
         await self._ensure_client()
+        self.remove_disabled_source_items()
         self._task = asyncio.create_task(
             self._collection_loop(),
             name="news-collector-loop",
@@ -788,6 +818,17 @@ class NewsCollector:
             await self._client.aclose()
             self._client = None
 
+    def remove_disabled_source_items(self) -> int:
+        configs = load_source_configs(self.sources_file)
+        disabled_source_ids = [
+            str(config.get("id") or config.get("name") or "").strip()
+            for config in configs
+            if not config.get("enabled", True)
+        ]
+        deleted = self.storage.delete_items_for_source_ids(disabled_source_ids)
+        deleted += self.storage.delete_items_by_source_prefixes(["demo/"])
+        return deleted
+
     async def refresh(
         self,
         *,
@@ -796,6 +837,7 @@ class NewsCollector:
     ) -> dict[str, Any]:
         async with self._refresh_lock:
             await self._ensure_client()
+            disabled_deleted = self.remove_disabled_source_items()
             sources = [
                 config
                 for config in load_source_configs(self.sources_file)
@@ -822,7 +864,7 @@ class NewsCollector:
                 "inserted": 0,
                 "updated": 0,
                 "stored": 0,
-                "cleanup_deleted": 0,
+                "cleanup_deleted": disabled_deleted,
             }
 
             for source_config in sources:
@@ -893,7 +935,7 @@ class NewsCollector:
                     summary["sources_failed"] += 1
                     self.last_error = str(exc)
 
-            summary["cleanup_deleted"] = self.storage.cleanup_old_items(
+            summary["cleanup_deleted"] += self.storage.cleanup_old_items(
                 self.retention_days
             )
             summary["finished_at"] = utc_now().isoformat()

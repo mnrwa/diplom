@@ -34,6 +34,8 @@ export type Vehicle = {
   driverName?: string | null;
   mileageKm?: number;
   lastServiceKm?: number;
+  maxWeightKg?: number;
+  maxVolumeCbm?: number;
   driverProfile?: { id: number; user?: SessionUser | null } | null;
   routes?: RouteSummary[];
   gpsLogs?: Array<{ lat: number; lon: number; speed?: number; timestamp: string }>;
@@ -140,6 +142,8 @@ export type RouteSummary = {
   telegramChatId?: string | null;
   trackingToken?: string | null;
   fuelCostRub?: number | null;
+  cargoWeightKg?: number | null;
+  cargoVolumeCbm?: number | null;
   createdAt?: string;
   vehicle?: Vehicle | null;
   driver?: { id: number; user?: SessionUser | null } | null;
@@ -167,6 +171,29 @@ export type HeatmapCell = {
   load_label?: string;
   highway?: string;
   avg_speed_kmh?: number;
+};
+
+export type WeatherHeatmapCell = {
+  lat: number;
+  lon: number;
+  intensity: number;
+  risk_score?: number;
+  temperature?: number | null;
+  condition?: string | null;
+  description?: string | null;
+  wind_speed?: number | null;
+  precipitation_type?: string | null;
+  precipitation_strength?: number | null;
+};
+
+export type WeatherHeatmapResult = {
+  provider: string;
+  center?: { lat: number; lon: number };
+  radius?: number;
+  count?: number;
+  errors?: number;
+  error?: string;
+  cells: WeatherHeatmapCell[];
 };
 
 export type AiEtaResult = {
@@ -345,14 +372,32 @@ export type PublicTrackRouteResponse = {
 export const publicTrackRoute = (id: number) =>
   api.get<PublicTrackRouteResponse>(`/public/track/${id}`).then((r) => r.data);
 
+export type EnRouteDriver = {
+  driverId: number;
+  driverName: string;
+  routeId: number;
+  routeName: string;
+  vehiclePlate: string;
+  distanceToPickup: number;
+  remainingWeightKg: number;
+  remainingVolumeCbm: number;
+  fits: boolean;
+  detourRequired: boolean;
+};
+
 export const createRoute = (data: {
   name: string;
   startPointId: number;
   endPointId: number;
   vehicleId?: number;
   driverId?: number;
+  cargoWeightKg?: number;
+  cargoVolumeCbm?: number;
   telegramChatId?: string;
 }) => api.post<RouteSummary>("/routes", data).then((r) => r.data);
+
+export const getEnRouteDrivers = (routeId: number) =>
+  api.get<EnRouteDriver[]>(`/routes/${routeId}/enroute-drivers`).then((r) => r.data);
 
 export const recalcRoute = (id: number) =>
   api.post<RouteSummary>(`/routes/${id}/recalculate`).then((r) => r.data);
@@ -464,6 +509,21 @@ export const getAiEta = (params: {
 export const getAiWeather = (lat: number, lon: number) =>
   fetch(`${AI_URL}/weather?lat=${lat}&lon=${lon}`).then((r) => r.json());
 
+export const getAiWeatherHeatmap = (params: {
+  lat: number;
+  lon: number;
+  radius?: number;
+  steps?: number;
+}) => {
+  const query = new URLSearchParams({
+    lat: String(params.lat),
+    lon: String(params.lon),
+    radius: String(params.radius ?? 0.45),
+    steps: String(params.steps ?? 3),
+  });
+  return fetch(`${AI_URL}/weather/heatmap?${query}`).then((r) => r.json()) as Promise<WeatherHeatmapResult>;
+};
+
 export type ForecastDay = {
   date: string;
   day_name: string;
@@ -567,3 +627,77 @@ export const completeMarketplaceOrder = (id: number) =>
 
 export const getMyBids = () =>
   api.get<MarketplaceBid[]>("/marketplace/my-bids").then((r) => r.data);
+
+// ── Dynamic Routing Analytics ─────────────────────────────────────────────────
+
+export type HubCandidate = {
+  name: string;
+  lat: number;
+  lon: number;
+  distanceToHub: number;
+  distanceFromHub: number;
+  totalDistanceKm: number;
+  deviationKm: number;
+  score: number;
+  shiftFeasible: boolean;
+};
+
+export type HubSuggestResult = {
+  needsHub: boolean;
+  directDistanceKm: number;
+  candidates: HubCandidate[];
+};
+
+export type ConsolidationCandidate = {
+  routeId: number;
+  routeName: string;
+  vehiclePlate: string;
+  vehicleModel: string;
+  departureDist: number;
+  bearingDiff: number;
+  remainingWeightKg: number;
+  remainingVolumeCbm: number;
+  fits: boolean;
+  startCity: string;
+  endCity: string;
+};
+
+export type DriverZone = {
+  driverId: number;
+  driverName: string;
+  status: string;
+  center: { lat: number; lon: number };
+  radiusKm: number;
+  vehiclePlate: string | null;
+};
+
+export type BottleneckCell = {
+  lat: number;
+  lon: number;
+  count: number;
+  avgSpeedKmh: number;
+  intensity: number;
+};
+
+export type DepartureRisk = {
+  risk: number;
+  probability: number;
+  level: "low" | "medium" | "high";
+  distanceKm: number;
+  factors: Record<string, { risk: number; label: string }>;
+};
+
+export const suggestHub = (coords: { startLat: number; startLon: number; endLat: number; endLon: number }) =>
+  api.post<HubSuggestResult>("/routes/analytics/hub-suggest", coords).then((r) => r.data);
+
+export const getConsolidationCandidates = (params: { startLat: number; startLon: number; endLat: number; endLon: number; cargoWeightKg?: number; cargoVolumeCbm?: number }) =>
+  api.post<ConsolidationCandidate[]>("/routes/analytics/consolidation", params).then((r) => r.data);
+
+export const getDriverZones = () =>
+  api.get<{ zones: DriverZone[]; total: number }>("/routes/analytics/zones").then((r) => r.data);
+
+export const getBottlenecks = () =>
+  api.get<BottleneckCell[]>("/routes/analytics/bottlenecks").then((r) => r.data);
+
+export const getDepartureRisk = (coords: { startLat: number; startLon: number; endLat: number; endLon: number }) =>
+  api.post<DepartureRisk>("/routes/analytics/departure-risk", coords).then((r) => r.data);

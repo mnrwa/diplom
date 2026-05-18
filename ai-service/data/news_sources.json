@@ -28,7 +28,7 @@
   },
   {
     "id": "telegram-route-watch",
-    "enabled": true,
+    "enabled": false,
     "kind": "local_export",
     "name": "Telegram Route Watch",
     "platform": "TELEGRAM",
@@ -38,7 +38,7 @@
   },
   {
     "id": "vk-route-watch",
-    "enabled": true,
+    "enabled": false,
     "kind": "local_export",
     "name": "VK Road Public",
     "platform": "VK",
@@ -48,7 +48,7 @@
   },
   {
     "id": "max-logistics-watch",
-    "enabled": true,
+    "enabled": false,
     "kind": "local_export",
     "name": "MAX Logistics Watch",
     "platform": "MAX",
