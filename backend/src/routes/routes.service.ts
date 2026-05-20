@@ -308,7 +308,10 @@ export class RoutesService {
     return updated;
   }
 
-  async refreshRouteNews(id: number) {
+  async refreshRouteNews(
+    id: number,
+    currentPos?: { lat: number; lon: number },
+  ) {
     const route = await this.prisma.route.findUnique({
       where: { id },
       include: {
@@ -318,22 +321,41 @@ export class RoutesService {
     });
 
     if (!route) {
-      throw new NotFoundException('РњР°СЂС€СЂСѓС‚ РЅРµ РЅР°Р№РґРµРЅ');
+      throw new NotFoundException('Маршрут не найден');
     }
 
     if (!route.startPoint || !route.endPoint) {
       return { ok: false, reason: 'missing_points' as const };
     }
 
-    const geometry = this.buildGeometryFromRoute(route);
+    // When the driver has a live GPS position, search news from current
+    // position → destination instead of the static start → destination.
+    const effectiveStartPoint = currentPos
+      ? {
+          ...route.startPoint,
+          lat: currentPos.lat,
+          lon: currentPos.lon,
+          name: 'Текущая позиция',
+        }
+      : route.startPoint;
+
+    const geometry: [number, number][] = currentPos
+      ? [
+          [currentPos.lon, currentPos.lat],
+          [route.endPoint.lon, route.endPoint.lat],
+        ]
+      : this.buildGeometryFromRoute(route);
+
     if (geometry.length < 2) {
       return { ok: false, reason: 'missing_geometry' as const };
     }
 
     const newsPayload = await this.fetchNewsRisk({
-      startPoint: route.startPoint,
+      startPoint: effectiveStartPoint,
       endPoint: route.endPoint,
       geometry,
+      currentLat: currentPos?.lat,
+      currentLon: currentPos?.lon,
     });
 
     const now = new Date();
@@ -754,6 +776,8 @@ export class RoutesService {
     startPoint: any;
     endPoint: any;
     geometry: [number, number][];
+    currentLat?: number;
+    currentLon?: number;
   }) {
     const midpoint = getRouteMidpoint(
       input.geometry,
@@ -762,10 +786,7 @@ export class RoutesService {
     );
     const sampledWaypoints = geometryToWaypoints(input.geometry, 12)
       .filter((_, index, source) => {
-        if (source.length <= 6) {
-          return true;
-        }
-
+        if (source.length <= 6) return true;
         return index % Math.ceil(source.length / 6) === 0;
       })
       .map((point, index) => ({
@@ -774,34 +795,38 @@ export class RoutesService {
         lon: point.lon,
       }));
 
+    // When live GPS is available, anchor the search at the driver's position
+    const searchLat = input.currentLat ?? midpoint.lat;
+    const searchLon = input.currentLon ?? midpoint.lon;
+
     try {
       const newsRes = await firstValueFrom(
         this.http.post(
           `${this.aiUrl}/news-risks/route`,
           {
-            lat: midpoint.lat,
-            lon: midpoint.lon,
+            lat: searchLat,
+            lon: searchLon,
             start: {
               name: input.startPoint.name,
               city: input.startPoint.city,
-              address: input.startPoint.address,
+              address: input.startPoint.address ?? null,
               lat: input.startPoint.lat,
               lon: input.startPoint.lon,
             },
             end: {
               name: input.endPoint.name,
               city: input.endPoint.city,
-              address: input.endPoint.address,
+              address: input.endPoint.address ?? null,
               lat: input.endPoint.lat,
               lon: input.endPoint.lon,
             },
             waypoints: sampledWaypoints,
             max_items: 10,
             lookback_hours: 72,
+            // Signal to AI service that this is a live position query
+            live_position: input.currentLat != null,
           },
-          {
-            timeout: 7_000,
-          },
+          { timeout: 7_000 },
         ),
       );
 

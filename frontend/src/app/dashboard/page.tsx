@@ -60,7 +60,7 @@ import {
 } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { DriverSelector } from "@/components/maps/DriverSelector";
-import MapView from "@/components/map/MapView";
+import MapView, { type ZoneRing } from "@/components/map/MapView";
 import { AutoAssignButton } from "@/components/dashboard/AutoAssignModal";
 import { MaintenancePanel } from "@/components/dashboard/MaintenancePanel";
 import { useWebSocket } from "@/hooks/useWebSocket";
@@ -99,6 +99,11 @@ import {
 	  type WeatherHeatmapResult,
 	} from "@/lib/api";
 import { clearSession, getStoredUser } from "@/lib/session";
+
+const ZONE_COLORS = [
+  "#10b981", "#3b82f6", "#f59e0b", "#8b5cf6", "#ef4444",
+  "#06b6d4", "#84cc16", "#f97316", "#ec4899", "#14b8a6",
+];
 
 function haversineKm(lat1: number, lon1: number, lat2: number, lon2: number) {
   const R = 6371;
@@ -683,33 +688,49 @@ export default function DashboardPage() {
                         selectedDriver={selectedDriver}
                         onSelectDriver={setSelectedDriver}
                       />
-                      {/* Feature 4: Zones toggle */}
-                      <button
-                        type="button"
-                        onClick={() => setShowZones((v) => !v)}
-                        className={`flex items-center gap-1.5 rounded-xl border px-3 py-1.5 text-xs font-medium transition ${showZones ? "border-sky-300 bg-sky-100 text-sky-800" : "border-sand bg-fog text-warmsilver hover:bg-warmlight"}`}
-                      >
-                        <Layers className="h-3.5 w-3.5" />
-                        Зоны {showZones && driverZones ? `(${driverZones.total})` : ""}
-                      </button>
-                      {/* Feature 5: Bottlenecks toggle */}
-                      <button
-                        type="button"
-                        onClick={() => setShowBottlenecks((v) => !v)}
-                        className={`flex items-center gap-1.5 rounded-xl border px-3 py-1.5 text-xs font-medium transition ${showBottlenecks ? "border-amber-300 bg-amber-100 text-amber-800" : "border-sand bg-fog text-warmsilver hover:bg-warmlight"}`}
-                      >
-                        <Zap className="h-3.5 w-3.5" />
-	                        Узкие места {showBottlenecks && bottleneckData.length > 0 ? `(${bottleneckData.length})` : ""}
-	                      </button>
-	                      <button
-	                        type="button"
-	                        onClick={() => setShowWeatherHeatmap((v) => !v)}
-	                        className={`flex items-center gap-1.5 rounded-xl border px-3 py-1.5 text-xs font-medium transition ${showWeatherHeatmap ? "border-sky-300 bg-sky-100 text-sky-800" : "border-sand bg-fog text-warmsilver hover:bg-warmlight"}`}
-	                      >
-	                        <CloudRain className="h-3.5 w-3.5" />
-	                        Погода {showWeatherHeatmap && weatherHeatmap?.cells.length ? `(${weatherHeatmap.cells.length})` : ""}
-	                      </button>
-	                    </div>
+                      {/* Zones — circles showing driver coverage radius */}
+                      <div className="relative group/zones">
+                        <button
+                          type="button"
+                          onClick={() => setShowZones((v) => !v)}
+                          className={`flex items-center gap-1.5 rounded-xl border px-3 py-1.5 text-xs font-medium transition ${showZones ? "border-sky-300 bg-sky-100 text-sky-800" : "border-sand bg-fog text-warmsilver hover:bg-warmlight"}`}
+                        >
+                          <Layers className="h-3.5 w-3.5" />
+                          Зоны {showZones && driverZones ? `(${driverZones.total})` : ""}
+                        </button>
+                        <div className="pointer-events-none absolute left-0 top-full z-50 mt-1.5 hidden w-52 rounded-xl border border-sand bg-white px-3 py-2 text-xs text-warmsilver shadow-lg group-hover/zones:block">
+                          Круговые зоны покрытия водителей — показывает, кто обслуживает какой район
+                        </div>
+                      </div>
+                      {/* Bottlenecks — slow GPS heatmap */}
+                      <div className="relative group/bn">
+                        <button
+                          type="button"
+                          onClick={() => setShowBottlenecks((v) => !v)}
+                          className={`flex items-center gap-1.5 rounded-xl border px-3 py-1.5 text-xs font-medium transition ${showBottlenecks ? "border-amber-300 bg-amber-100 text-amber-800" : "border-sand bg-fog text-warmsilver hover:bg-warmlight"}`}
+                        >
+                          <Zap className="h-3.5 w-3.5" />
+                          Пробки {showBottlenecks && bottleneckData.length > 0 ? `(${bottleneckData.length})` : ""}
+                        </button>
+                        <div className="pointer-events-none absolute left-0 top-full z-50 mt-1.5 hidden w-56 rounded-xl border border-sand bg-white px-3 py-2 text-xs text-warmsilver shadow-lg group-hover/bn:block">
+                          Тепловая карта пробок: участки со скоростью &lt; 35 км/ч за последние 30 дней
+                        </div>
+                      </div>
+                      {/* Precipitation overlay — RainViewer radar */}
+                      <div className="relative group/wx">
+                        <button
+                          type="button"
+                          onClick={() => setShowWeatherHeatmap((v) => !v)}
+                          className={`flex items-center gap-1.5 rounded-xl border px-3 py-1.5 text-xs font-medium transition ${showWeatherHeatmap ? "border-sky-300 bg-sky-100 text-sky-800" : "border-sand bg-fog text-warmsilver hover:bg-warmlight"}`}
+                        >
+                          <CloudRain className="h-3.5 w-3.5" />
+                          Осадки {showWeatherHeatmap ? "●" : ""}
+                        </button>
+                        <div className="pointer-events-none absolute left-0 top-full z-50 mt-1.5 hidden w-60 rounded-xl border border-sand bg-white px-3 py-2 text-xs text-warmsilver shadow-lg group-hover/wx:block">
+                          Радар осадков в реальном времени (RainViewer) — зелёный: слабый дождь, жёлтый: умеренный, красный: сильный
+                        </div>
+                      </div>
+                    </div>
                     {(() => {
                       const points: Array<{
                         id: string;
@@ -806,27 +827,28 @@ export default function DashboardPage() {
                         });
                       });
 
+                      const zoneRings: ZoneRing[] = showZones && driverZones
+                        ? driverZones.zones.map((z: DriverZone, i: number) => ({
+                            id: `zone-ring-${z.driverId}`,
+                            lat: z.center.lat,
+                            lon: z.center.lon,
+                            radiusKm: z.radiusKm,
+                            color: ZONE_COLORS[i % ZONE_COLORS.length],
+                            label: z.driverName,
+                          }))
+                        : [];
+
                       return (
                         <MapView
                           fitToData
                           className="h-[420px] w-full rounded-xl"
-                          points={showZones && driverZones
-                            ? [
-                                ...points,
-                                ...driverZones.zones.map((z: DriverZone) => ({
-                                  id: `zone-${z.driverId}`,
-                                  kind: "driver" as const,
-                                  title: `Зона: ${z.driverName}`,
-                                  subtitle: `${z.vehiclePlate ?? ""} · ${z.radiusKm} км`,
-                                  longitude: z.center.lon,
-                                  latitude: z.center.lat,
-                                })),
-                              ]
-                            : points}
-	                          lines={lines}
-	                          heatmapCells={showBottlenecks ? bottleneckData : null}
-	                          weatherHeatmapCells={showWeatherHeatmap ? weatherHeatmap?.cells ?? [] : null}
-	                          highlightedPointIds={
+                          points={points}
+                          lines={lines}
+                          zoneRings={zoneRings}
+                          heatmapCells={showBottlenecks ? bottleneckData : null}
+                          weatherHeatmapCells={null}
+                          precipitationOverlay={showWeatherHeatmap}
+                          highlightedPointIds={
                             selectedDriver ? [`driver-${selectedDriver}`] : []
                           }
                           onPointClick={(point) => {

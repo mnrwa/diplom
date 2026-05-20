@@ -1,5 +1,6 @@
 "use client";
 
+import type GeoJSON from "geojson";
 import { CloudRain, LocateFixed, Maximize2, Minus, Plus, Wind } from "lucide-react";
 import maplibregl, {
   type Map as MapLibreMap,
@@ -25,12 +26,24 @@ export type MapLine = {
 export type MapPoint = {
   id: string;
   entityId?: number;
-  kind: "warehouse" | "pickup" | "vehicle" | "driver";
+  kind: "warehouse" | "pickup" | "vehicle" | "driver" | "event";
   title: string;
   subtitle?: string;
   longitude: number;
   latitude: number;
   speed?: number | null;
+  /** ISO timestamp — event markers older than this are hidden */
+  expiresAt?: string | null;
+  riskLevel?: "low" | "medium" | "high" | null;
+};
+
+export type ZoneRing = {
+  id: string;
+  lat: number;
+  lon: number;
+  radiusKm: number;
+  color: string;
+  label?: string;
 };
 
 export type MapSelection = {
@@ -51,6 +64,8 @@ type MapViewProps = {
   points?: MapPoint[];
   heatmapCells?: HeatmapCell[] | null;
   weatherHeatmapCells?: WeatherHeatmapCell[] | null;
+  zoneRings?: ZoneRing[];
+  precipitationOverlay?: boolean;
   center?: [number, number];
   className?: string;
   containerClassName?: string;
@@ -74,6 +89,7 @@ type FallbackMarkerRecord = {
   marker: MapLibreMarker;
   element: HTMLElement;
   popup: maplibregl.Popup;
+  kind: MapPoint["kind"];
 };
 
 type DgisRuntime = {
@@ -89,10 +105,11 @@ type FallbackRuntime = {
   kind: "fallback";
   map: MapLibreMap;
   markers: Map<string, FallbackMarkerRecord>;
-  // Track logical line ids (MapLine.id). Source/layer ids are derived from it.
   lineIds: Set<string>;
   selectionMarker: MapLibreMarker | null;
   hasCluster: boolean;
+  hasRainViewer: boolean;
+  hasZones: boolean;
 };
 
 type Runtime = DgisRuntime | FallbackRuntime;
@@ -106,6 +123,8 @@ export default function MapView({
   points = [],
   heatmapCells = null,
   weatherHeatmapCells = null,
+  zoneRings = [],
+  precipitationOverlay = false,
   center,
   className = "h-[420px] w-full rounded-[28px]",
   containerClassName,
@@ -349,10 +368,19 @@ export default function MapView({
     const runtime = runtimeRef.current;
     if (!runtime || !ready) return;
 
+    // Filter out expired event markers
+    const now = Date.now();
+    const activePoints = points.filter((p) => {
+      if (p.kind === "event" && p.expiresAt) {
+        return now < new Date(p.expiresAt).getTime();
+      }
+      return true;
+    });
+
     if (runtime.kind === "2gis") {
       syncDgisMarkers(
         runtime,
-        points,
+        activePoints,
         highlightedPointIds,
         selectableRef.current,
         onSelectRef,
@@ -364,7 +392,7 @@ export default function MapView({
     return scheduleFallbackSync(runtime, () =>
       syncFallbackMarkers(
         runtime,
-        points,
+        activePoints,
         highlightedPointIds,
         selectableRef.current,
         onSelectRef,
@@ -398,6 +426,18 @@ export default function MapView({
     if (!runtime || !ready || runtime.kind !== "fallback") return;
     syncFallbackWeatherHeatmap(runtime, weatherHeatmapCells);
   }, [weatherHeatmapCells, ready]);
+
+  useEffect(() => {
+    const runtime = runtimeRef.current;
+    if (!runtime || !ready || runtime.kind !== "fallback") return;
+    void syncRainViewer(runtime, precipitationOverlay);
+  }, [precipitationOverlay, ready]);
+
+  useEffect(() => {
+    const runtime = runtimeRef.current;
+    if (!runtime || !ready || runtime.kind !== "fallback") return;
+    return scheduleFallbackSync(runtime, () => syncZoneRings(runtime, zoneRings));
+  }, [zoneRings, ready]);
 
   useEffect(() => {
     const runtime = runtimeRef.current;
@@ -613,14 +653,23 @@ function initFallbackMap(
 
   ensureMapStyles();
 
-  runtimeRef.current = {
+  const runtime: FallbackRuntime = {
     kind: "fallback",
     map,
     markers: new Map(),
     lineIds: new Set(),
     selectionMarker: null,
     hasCluster: false,
+    hasRainViewer: false,
+    hasZones: false,
   };
+  runtimeRef.current = runtime;
+
+  map.on("zoom", () => {
+    const rt = runtimeRef.current;
+    if (!rt || rt.kind !== "fallback") return;
+    updateDriverVisibility(rt);
+  });
 }
 
 function syncDgisLines(runtime: DgisRuntime, lines: MapLine[]) {
@@ -865,27 +914,27 @@ function syncFallbackMarkers(
       .setLngLat([point.longitude, point.latitude])
       .addTo(runtime.map);
 
-    // Smooth GPS-update transitions — only for moving markers
-    if (point.kind === "driver" || point.kind === "vehicle") {
-      setTimeout(() => {
-        const wrapper = element.parentElement;
-        if (wrapper) wrapper.style.transition = "transform 0.85s linear";
-      }, 120);
-    }
-
     runtime.markers.set(point.id, {
       marker: mlMarker,
       element,
       popup,
+      kind: point.kind,
     });
   });
 
   syncFallbackCluster(runtime, points);
+  updateDriverVisibility(runtime);
 }
 
 function syncFallbackCluster(runtime: FallbackRuntime, points: MapPoint[]) {
   const map = runtime.map;
-  const features = points.map((p) => ({
+
+  // Only cluster driver/vehicle points
+  const movingPoints = points.filter(
+    (p) => p.kind === "driver" || p.kind === "vehicle",
+  );
+
+  const features = movingPoints.map((p) => ({
     type: "Feature" as const,
     geometry: { type: "Point" as const, coordinates: [p.longitude, p.latitude] },
     properties: { id: p.id, kind: p.kind },
@@ -903,27 +952,22 @@ function syncFallbackCluster(runtime: FallbackRuntime, points: MapPoint[]) {
       type: "geojson",
       data: geojson as any,
       cluster: true,
-      clusterMaxZoom: 10,
-      clusterRadius: 60,
+      clusterMaxZoom: CLUSTER_MAX_ZOOM,
+      clusterRadius: 55,
     });
 
+    // Cluster circle — emerald colour matching driver markers
     map.addLayer({
       id: CLUSTER_LAYER,
       type: "circle",
       source: CLUSTER_SOURCE,
       filter: ["has", "point_count"],
       paint: {
-        "circle-color": [
-          "step", ["get", "point_count"],
-          "#6366f1", 10, "#7c3aed", 50, "#581c87",
-        ],
-        "circle-radius": [
-          "step", ["get", "point_count"],
-          20, 10, 28, 50, 36,
-        ],
+        "circle-color": "#10b981",
+        "circle-radius": ["step", ["get", "point_count"], 22, 5, 28, 15, 34],
         "circle-stroke-width": 3,
         "circle-stroke-color": "#ffffff",
-        "circle-opacity": 0.9,
+        "circle-opacity": 0.95,
       },
     });
 
@@ -934,10 +978,37 @@ function syncFallbackCluster(runtime: FallbackRuntime, points: MapPoint[]) {
       filter: ["has", "point_count"],
       layout: {
         "text-field": "{point_count_abbreviated}",
-        "text-size": 13,
-        "text-font": ["Open Sans Regular", "Arial Unicode MS Regular"],
+        "text-size": 14,
+        "text-font": ["Open Sans Bold", "Arial Unicode MS Bold"],
       },
       paint: { "text-color": "#ffffff" },
+    });
+
+    // Zoom into cluster on click
+    map.on("click", CLUSTER_LAYER, (e) => {
+      const features = map.queryRenderedFeatures(e.point, {
+        layers: [CLUSTER_LAYER],
+      });
+      if (!features.length) return;
+      const clusterId = features[0].properties?.cluster_id as number | undefined;
+      const coords = (features[0].geometry as GeoJSON.Point).coordinates as [
+        number,
+        number,
+      ];
+      if (clusterId == null) return;
+      void (
+        map.getSource(CLUSTER_SOURCE) as maplibregl.GeoJSONSource
+      ).getClusterExpansionZoom(clusterId).then((zoom) => {
+        if (zoom == null) return;
+        map.easeTo({ center: coords, zoom: zoom + 0.5, duration: 400 });
+      }).catch(() => { /* ok */ });
+    });
+
+    map.on("mouseenter", CLUSTER_LAYER, () => {
+      map.getCanvas().style.cursor = "pointer";
+    });
+    map.on("mouseleave", CLUSTER_LAYER, () => {
+      map.getCanvas().style.cursor = "";
     });
 
     runtime.hasCluster = true;
@@ -1054,12 +1125,13 @@ function clearRuntimeObjects(runtime: Runtime) {
 	    runtime.hasCluster = false;
 	  }
 
-	  [WEATHER_CIRCLE_LAYER, WEATHER_HEATMAP_LAYER, ROUTE_LOAD_LAYER, ROUTE_LOAD_LAYER2].forEach((id) => {
-	    try { if (runtime.map.getLayer(id)) runtime.map.removeLayer(id); } catch { /* ok */ }
-	  });
-	  [WEATHER_HEATMAP_SOURCE, ROUTE_LOAD_SOURCE].forEach((id) => {
-	    try { if (runtime.map.getSource(id)) runtime.map.removeSource(id); } catch { /* ok */ }
-	  });
+  [WEATHER_CIRCLE_LAYER, WEATHER_HEATMAP_LAYER, ROUTE_LOAD_LAYER, ROUTE_LOAD_LAYER2,
+   RAINVIEWER_LAYER, ZONE_LINE_LAYER, ZONE_FILL_LAYER].forEach((id) => {
+    try { if (runtime.map.getLayer(id)) runtime.map.removeLayer(id); } catch { /* ok */ }
+  });
+  [WEATHER_HEATMAP_SOURCE, ROUTE_LOAD_SOURCE, RAINVIEWER_SOURCE, ZONE_SOURCE].forEach((id) => {
+    try { if (runtime.map.getSource(id)) runtime.map.removeSource(id); } catch { /* ok */ }
+  });
 	
 	  runtime.markers.clear();
   runtime.lineIds.clear();
@@ -1146,6 +1218,7 @@ function removeRouteLine(runtime: FallbackRuntime, lineId: string) {
   }
 }
 
+const CLUSTER_MAX_ZOOM     = 10;
 const CLUSTER_SOURCE       = "velto-cluster-source";
 const CLUSTER_LAYER        = "velto-cluster-circles";
 const CLUSTER_COUNT_LAYER  = "velto-cluster-counts";
@@ -1156,6 +1229,145 @@ const ROUTE_LOAD_LAYER2 = "velto-route-load-layer-outline";
 const WEATHER_HEATMAP_SOURCE = "velto-weather-heatmap-source";
 const WEATHER_HEATMAP_LAYER = "velto-weather-heatmap-layer";
 const WEATHER_CIRCLE_LAYER = "velto-weather-circle-layer";
+const RAINVIEWER_SOURCE = "velto-rainviewer-source";
+const RAINVIEWER_LAYER  = "velto-rainviewer-layer";
+const ZONE_SOURCE       = "velto-zone-source";
+const ZONE_FILL_LAYER   = "velto-zone-fill";
+const ZONE_LINE_LAYER   = "velto-zone-line";
+
+/** Hide/show individual driver HTML markers depending on zoom (cluster takes over at low zoom). */
+function updateDriverVisibility(runtime: FallbackRuntime) {
+  const show = runtime.map.getZoom() >= CLUSTER_MAX_ZOOM;
+  runtime.markers.forEach((record) => {
+    if (record.kind === "driver" || record.kind === "vehicle") {
+      record.element.style.visibility = show ? "visible" : "hidden";
+      record.element.style.pointerEvents = show ? "" : "none";
+    }
+  });
+}
+
+/** Add/remove RainViewer precipitation radar tile overlay. */
+async function syncRainViewer(runtime: FallbackRuntime, show: boolean) {
+  const map = runtime.map;
+
+  const cleanup = () => {
+    try { if (map.getLayer(RAINVIEWER_LAYER)) map.removeLayer(RAINVIEWER_LAYER); } catch { /* ok */ }
+    try { if (map.getSource(RAINVIEWER_SOURCE)) map.removeSource(RAINVIEWER_SOURCE); } catch { /* ok */ }
+    runtime.hasRainViewer = false;
+  };
+
+  if (!show) { cleanup(); return; }
+  if (runtime.hasRainViewer) return;
+
+  if (!map.isStyleLoaded()) {
+    map.once("style.load", () => { void syncRainViewer(runtime, show); });
+    return;
+  }
+
+  try {
+    const res = await fetch("https://api.rainviewer.com/public/weather-maps.json");
+    const data = await res.json() as { radar?: { past?: { path: string }[] } };
+    const frames = data?.radar?.past ?? [];
+    if (!frames.length) return;
+
+    const latest = frames[frames.length - 1];
+    const tileUrl = `https://tilecache.rainviewer.com${latest.path}/256/{z}/{x}/{y}/2/1_1.png`;
+
+    cleanup();
+
+    map.addSource(RAINVIEWER_SOURCE, {
+      type: "raster",
+      tiles: [tileUrl],
+      tileSize: 256,
+      attribution: "© RainViewer",
+    });
+
+    map.addLayer({
+      id: RAINVIEWER_LAYER,
+      type: "raster",
+      source: RAINVIEWER_SOURCE,
+      paint: { "raster-opacity": 0.72 },
+    });
+
+    runtime.hasRainViewer = true;
+  } catch {
+    // RainViewer unavailable, skip silently
+  }
+}
+
+/** Build approximate circle polygon coordinates. */
+function circleCoords(lat: number, lon: number, radiusKm: number, steps = 64): [number, number][] {
+  const coords: [number, number][] = [];
+  const latRad = lat * (Math.PI / 180);
+  for (let i = 0; i <= steps; i++) {
+    const angle = (i / steps) * 2 * Math.PI;
+    const dLat = (radiusKm / 110.574) * Math.sin(angle);
+    const dLon = (radiusKm / (111.32 * Math.cos(latRad))) * Math.cos(angle);
+    coords.push([lon + dLon, lat + dLat]);
+  }
+  return coords;
+}
+
+/** Draw zone ring polygons on the map. */
+function syncZoneRings(runtime: FallbackRuntime, zones: ZoneRing[]) {
+  const map = runtime.map;
+
+  const cleanup = () => {
+    try { if (map.getLayer(ZONE_LINE_LAYER)) map.removeLayer(ZONE_LINE_LAYER); } catch { /* ok */ }
+    try { if (map.getLayer(ZONE_FILL_LAYER)) map.removeLayer(ZONE_FILL_LAYER); } catch { /* ok */ }
+    try { if (map.getSource(ZONE_SOURCE)) map.removeSource(ZONE_SOURCE); } catch { /* ok */ }
+    runtime.hasZones = false;
+  };
+
+  if (!zones.length) { cleanup(); return; }
+
+  const features = zones.map((z) => ({
+    type: "Feature" as const,
+    properties: { color: z.color, id: z.id },
+    geometry: {
+      type: "Polygon" as const,
+      coordinates: [circleCoords(z.lat, z.lon, z.radiusKm)],
+    },
+  }));
+
+  const geojson = { type: "FeatureCollection" as const, features };
+
+  const existing = map.getSource(ZONE_SOURCE) as maplibregl.GeoJSONSource | undefined;
+  if (existing?.setData) {
+    existing.setData(geojson as any);
+    return;
+  }
+
+  cleanup();
+
+  try {
+    map.addSource(ZONE_SOURCE, { type: "geojson", data: geojson as any });
+
+    map.addLayer({
+      id: ZONE_FILL_LAYER,
+      type: "fill",
+      source: ZONE_SOURCE,
+      paint: {
+        "fill-color": ["get", "color"],
+        "fill-opacity": 0.07,
+      },
+    });
+
+    map.addLayer({
+      id: ZONE_LINE_LAYER,
+      type: "line",
+      source: ZONE_SOURCE,
+      paint: {
+        "line-color": ["get", "color"],
+        "line-width": 2,
+        "line-opacity": 0.5,
+        "line-dasharray": [4, 3],
+      },
+    });
+
+    runtime.hasZones = true;
+  } catch { /* already added */ }
+}
 
 function intensityToColor(intensity: number): string {
   if (intensity < 0.25) return "#22c55e";  // green — free
@@ -1444,6 +1656,10 @@ function hydrateMarkerElement(
   marker.style.lineHeight = "1";
   if (point.kind === "warehouse") {
     marker.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>`;
+  } else if (point.kind === "event") {
+    const riskBg = point.riskLevel === "high" ? "#ef4444" : point.riskLevel === "medium" ? "#f59e0b" : "#6366f1";
+    marker.style.background = riskBg;
+    marker.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>`;
   } else {
     marker.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>`;
   }
@@ -1461,6 +1677,7 @@ function markerTone(kind: MapPoint["kind"]) {
   if (kind === "warehouse") return "bg-slate-400 text-white";
   if (kind === "pickup") return "bg-blue-500 text-white";
   if (kind === "driver") return "bg-emerald-500 text-white";
+  if (kind === "event") return "bg-rose-500 text-white";
   return "bg-emerald-600 text-white"; // vehicle
 }
 

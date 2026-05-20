@@ -701,3 +701,66 @@ export const getBottlenecks = () =>
 
 export const getDepartureRisk = (coords: { startLat: number; startLon: number; endLat: number; endLon: number }) =>
   api.post<DepartureRisk>("/routes/analytics/departure-risk", coords).then((r) => r.data);
+
+// ── NLP News Analysis ─────────────────────────────────────────────────────────
+
+export type NlpNewsAnalysis = {
+  id: string;
+  reformulated: string;
+  risk_score: number;
+  risk_level: "low" | "medium" | "high";
+  model_used: "rut5+rubert" | "keywords";
+  keywords_found: string[];
+};
+
+export const analyzeNewsItems = (items: Array<{ id: string; title: string; summary: string }>) =>
+  fetch(`${AI_URL}/ai/news-analyze`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(items),
+  }).then((r) => r.json()) as Promise<NlpNewsAnalysis[]>;
+
+// ── Live Position News ────────────────────────────────────────────────────────
+
+export type LiveNewsItem = {
+  id: string;
+  title: string;
+  summary: string;
+  reformulated: string;
+  risk_score: number;
+  nlp_risk_score: number;
+  risk_level: "low" | "medium" | "high";
+  model_used: string;
+  keywords_found: string[];
+  channel: string;
+  source: string;
+  city: string | null;
+  lat: number | null;
+  lon: number | null;
+  distance_km: number | null;
+  published_at: string | null;
+  url: string | null;
+};
+
+export type LiveNewsResult = {
+  total_risk: number;
+  count: number;
+  current_city: string | null;
+  segment: string;
+  items: LiveNewsItem[];
+};
+
+export const getLiveNews = (params: {
+  current_lat: number;
+  current_lon: number;
+  end_lat: number;
+  end_lon: number;
+  end_name?: string;
+  end_city?: string;
+  max_items?: number;
+}) =>
+  fetch(`${AI_URL}/ai/live-news`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(params),
+  }).then((r) => r.json()) as Promise<LiveNewsResult>;

@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from routers import risk, weather, news, eta, heatmap, digest, forecast
+from routers import risk, weather, news, eta, heatmap, digest, forecast, nlp_digest, live_news
 from services.news_pipeline import create_news_collector, get_news_collector, set_news_collector
 
 app = FastAPI(
@@ -23,6 +23,8 @@ app.include_router(eta.router)
 app.include_router(heatmap.router)
 app.include_router(digest.router)
 app.include_router(forecast.router)
+app.include_router(nlp_digest.router)
+app.include_router(live_news.router)
 
 
 @app.on_event("startup")

@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pnpm add *)",
+      "Bash(node -e ' *)",
+      "Bash(docker exec *)",
+      "Bash(pnpm run *)",
+      "Bash(npx prisma *)",
+      "Bash(timeout 5 bash -c 'echo \"\" > /dev/tcp/localhost/5432')",
+      "Bash(netstat -ano)"
+    ]
+  }
+}

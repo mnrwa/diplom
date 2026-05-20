@@ -10,8 +10,8 @@ frontend/.next/
 .local/
 ai-service/data/*.sqlite3
 *.log
-.env
-.env.local
+#.env
+#.env.local
 .DS_Store
 
 # IDE

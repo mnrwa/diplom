@@ -1,25 +1,41 @@
 "use client";
 
 import MapView, { type MapLine, type MapPoint } from "@/components/map/MapView";
-import type { DriverDetail, SessionUser } from "@/lib/api";
+import type { DriverDetail, LiveNewsItem, LiveNewsResult, SessionUser } from "@/lib/api";
+import { getLiveNews } from "@/lib/api";
 import { useGpsEmitter } from "@/hooks/useGpsEmitter";
 import { VoiceAlerts } from "@/components/driver/VoiceAlerts";
 import { useQuery } from "@tanstack/react-query";
 
 const AI_URL = process.env.NEXT_PUBLIC_AI_URL ?? "http://localhost:8000";
 
-async function fetchNewsDigests(items: { id: string; title: string; summary: string }[]) {
-  if (!items.length) return {} as Record<string, string>;
+type NlpResult = { reformulated: string; risk_score: number; risk_level: string; model_used: string };
+
+async function fetchNlpAnalysis(items: { id: string; title: string; summary: string }[]) {
+  if (!items.length) return {} as Record<string, NlpResult>;
   try {
-    const r = await fetch(`${AI_URL}/ai/news-digest`, {
+    const r = await fetch(`${AI_URL}/ai/news-analyze`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(items),
     });
-    const data: { id: string; digest: string }[] = await r.json();
-    return Object.fromEntries(data.map((d) => [d.id, d.digest]));
+    const data: Array<{ id: string } & NlpResult> = await r.json();
+    return Object.fromEntries(data.map((d) => [d.id, d]));
   } catch {
-    return {} as Record<string, string>;
+    // fallback to keyword digest
+    try {
+      const r2 = await fetch(`${AI_URL}/ai/news-digest`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(items),
+      });
+      const data2: { id: string; digest: string }[] = await r2.json();
+      return Object.fromEntries(
+        data2.map((d) => [d.id, { reformulated: d.digest, risk_score: 0, risk_level: "low", model_used: "keywords" }])
+      );
+    } catch {
+      return {} as Record<string, NlpResult>;
+    }
   }
 }
 import { useOfflineGps } from "@/hooks/useOfflineGps";
@@ -190,6 +206,9 @@ export default function DriverWorkspace({
     });
   }
 
+  const NEWS_TTL_MS = 48 * 60 * 60_000;
+  const nowMs = Date.now();
+
   const visibleNews = driver.newsFeed;
 
   const voiceAlerts = visibleNews
@@ -198,14 +217,70 @@ export default function DriverWorkspace({
 
   const offlineGps = useOfflineGps(mode === "driver" ? (vehicleId ?? null) : null);
 
-  const { data: newsDigests = {} } = useQuery({
-    queryKey: ["news-digest", driver.id],
-    queryFn: () => fetchNewsDigests(
+  const { data: nlpAnalysis = {} } = useQuery({
+    queryKey: ["news-nlp", driver.id],
+    queryFn: () => fetchNlpAnalysis(
       driver.newsFeed.map((n) => ({ id: String(n.id), title: n.title, summary: n.summary }))
     ),
     enabled: driver.newsFeed.length > 0,
     staleTime: 300_000,
   });
+
+  // Live position → destination news, refreshed when GPS moves significantly
+  const endPoint = driver.activeRoute?.endPoint;
+  const liveGpsForQuery = mode === "driver" && gps.status === "active" && gps.position && endPoint
+    ? gps.position
+    : null;
+
+  const { data: liveNewsResult } = useQuery<LiveNewsResult | null>({
+    queryKey: [
+      "live-news",
+      driver.id,
+      // Round to ~2km grid so query only refetches when driver moves meaningfully
+      liveGpsForQuery ? Math.round(liveGpsForQuery.lat * 50) : 0,
+      liveGpsForQuery ? Math.round(liveGpsForQuery.lon * 50) : 0,
+    ],
+    queryFn: () =>
+      liveGpsForQuery && endPoint
+        ? getLiveNews({
+            current_lat: liveGpsForQuery.lat,
+            current_lon: liveGpsForQuery.lon,
+            end_lat: endPoint.lat,
+            end_lon: endPoint.lon,
+            end_name: endPoint.name,
+            end_city: endPoint.city,
+            max_items: 10,
+          })
+        : Promise.resolve(null),
+    enabled: !!liveGpsForQuery && !!endPoint,
+    staleTime: 4 * 60_000,
+    refetchInterval: 5 * 60_000,
+  });
+
+  // Add news event markers (live items with geo, expire after 48h)
+  if (liveNewsResult?.items) {
+    for (const item of liveNewsResult.items) {
+      if (item.lat == null || item.lon == null) continue;
+      const publishedMs = item.published_at ? new Date(item.published_at).getTime() : nowMs;
+      if (nowMs - publishedMs > NEWS_TTL_MS) continue;
+      points.push({
+        id: `news-evt-${item.id}`,
+        kind: "event",
+        title: item.reformulated
+          ? item.reformulated.slice(0, 60) + (item.reformulated.length > 60 ? "…" : "")
+          : item.title.slice(0, 60),
+        subtitle: item.city ?? item.channel,
+        longitude: item.lon,
+        latitude: item.lat,
+        expiresAt: new Date(publishedMs + NEWS_TTL_MS).toISOString(),
+        riskLevel: item.risk_level,
+      });
+    }
+  }
+
+  // Map center: follow live GPS position; fall back to driver's initial position
+  const mapCenter: [number, number] | undefined =
+    livePosition ? [livePosition.lon, livePosition.lat] : undefined;
 
   return (
     <main className="mx-auto w-full max-w-7xl px-4 py-5 md:px-6">
@@ -356,6 +431,7 @@ export default function DriverWorkspace({
             <MapView
               lines={lines}
               points={points}
+              center={mapCenter}
               className="h-[620px] w-full rounded-[20px]"
             />
           </div>
@@ -460,36 +536,90 @@ export default function DriverWorkspace({
       </section>
 
       <section className="mt-4 rounded-[28px] border border-sand bg-white p-6">
-        <p className="text-xs uppercase tracking-[0.32em] text-warmsilver">Новости по пути</p>
-        <h2 className="mt-3 text-2xl font-semibold text-plum">Telegram, VK, MAX и региональные источники</h2>
-        <div className="mt-6 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-          {visibleNews.length ? (
-            visibleNews.map((item) => (
-              <article key={item.id} className="rounded-[20px] border border-sand bg-fog p-5">
-                <div className="flex items-center justify-between gap-3">
-                  <div className="inline-flex items-center gap-2 rounded-full bg-white px-3 py-1 text-xs font-medium text-olive">
-                    <BadgeAlert className="h-3.5 w-3.5" />
-                    {getNewsSourceLabel(item)}
-                  </div>
-                  <span className="text-xs font-semibold text-[#9e0a0a]">
-                    Риск {Math.round(item.severity * 100)}%
-                  </span>
-                </div>
-                <p className="mt-4 text-sm leading-6 text-plum">
-                  {newsDigests[item.id] || item.summary || item.title}
-                </p>
-                <div className="mt-4 flex items-center gap-2 text-xs text-warmsilver">
-                  <Newspaper className="h-3.5 w-3.5" />
-                  <span>{item.channel}</span>
-                  <span>·</span>
-                  <span>{new Date(item.publishedAt).toLocaleString("ru-RU")}</span>
-                </div>
-              </article>
-            ))
-          ) : (
-            <EmptyMessage text="События по маршруту пока не сформированы." />
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <p className="text-xs uppercase tracking-[0.32em] text-warmsilver">Новости по пути</p>
+            <h2 className="mt-3 text-2xl font-semibold text-plum">Telegram, VK, MAX и региональные источники</h2>
+          </div>
+          {liveNewsResult && (
+            <div className="flex shrink-0 flex-col items-end gap-1">
+              <span className="inline-flex items-center gap-2 rounded-full bg-emerald-50 px-3 py-1 text-xs font-medium text-emerald-700">
+                <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-500" />
+                Live · {liveNewsResult.segment}
+              </span>
+              <span className="text-xs text-warmsilver">{liveNewsResult.count} новостей по текущему отрезку</span>
+            </div>
           )}
         </div>
+
+        {/* Live news block — shown when GPS is active */}
+        {liveNewsResult && liveNewsResult.items.length > 0 && (
+          <div className="mt-6">
+            <p className="mb-3 text-xs font-semibold uppercase tracking-widest text-emerald-700">
+              С текущей позиции до назначения
+            </p>
+            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+              {liveNewsResult.items.map((item) => (
+                <LiveNewsCard key={item.id} item={item} />
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Static feed — always shown as baseline */}
+        {visibleNews.length > 0 && (
+          <div className={liveNewsResult ? "mt-8 border-t border-sand pt-6" : "mt-6"}>
+            {liveNewsResult && (
+              <p className="mb-3 text-xs font-semibold uppercase tracking-widest text-warmsilver">
+                Все новости по маршруту (база)
+              </p>
+            )}
+            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+              {visibleNews.map((item) => {
+                const nlp = nlpAnalysis[String(item.id)];
+                const riskScore = nlp ? nlp.risk_score : item.severity;
+                const riskLevel = nlp?.risk_level ?? (item.severity >= 0.6 ? "high" : item.severity >= 0.35 ? "medium" : "low");
+                const riskColor = riskLevel === "high" ? "text-rose-600" : riskLevel === "medium" ? "text-amber-600" : "text-emerald-600";
+                return (
+                  <article key={item.id} className="rounded-[20px] border border-sand bg-fog p-5">
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="inline-flex items-center gap-2 rounded-full bg-white px-3 py-1 text-xs font-medium text-olive">
+                        <BadgeAlert className="h-3.5 w-3.5" />
+                        {getNewsSourceLabel(item)}
+                      </div>
+                      <span className={`text-xs font-semibold ${riskColor}`}>
+                        Риск {Math.round(riskScore * 100)}%
+                      </span>
+                    </div>
+                    <p className="mt-4 text-sm leading-6 text-plum">
+                      {nlp?.reformulated || item.summary || item.title}
+                    </p>
+                    <div className="mt-4 flex items-center gap-2 text-xs text-warmsilver">
+                      <Newspaper className="h-3.5 w-3.5" />
+                      <span>{item.channel}</span>
+                      <span>·</span>
+                      <span>{new Date(item.publishedAt).toLocaleString("ru-RU")}</span>
+                      {nlp && (
+                        <>
+                          <span>·</span>
+                          <span className="rounded-full bg-white px-2 py-0.5 font-medium text-olive">
+                            {nlp.model_used === "rut5+rubert" ? "🧠 Нейросеть" : "📝 Ключевые слова"}
+                          </span>
+                        </>
+                      )}
+                    </div>
+                  </article>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {!liveNewsResult && !visibleNews.length && (
+          <div className="mt-6">
+            <EmptyMessage text="События по маршруту пока не сформированы." />
+          </div>
+        )}
       </section>
     </main>
   );
@@ -799,5 +929,60 @@ function MiniStat({ icon, label, value }: { icon: ReactNode; label: string; valu
         <p className="mt-0.5 text-sm font-bold text-plum">{value}</p>
       </div>
     </div>
+  );
+}
+
+function LiveNewsCard({ item }: { item: LiveNewsItem }) {
+  const riskColor =
+    item.risk_level === "high"
+      ? "text-rose-600"
+      : item.risk_level === "medium"
+      ? "text-amber-600"
+      : "text-emerald-600";
+
+  const riskBg =
+    item.risk_level === "high"
+      ? "bg-rose-50 border-rose-100"
+      : item.risk_level === "medium"
+      ? "bg-amber-50 border-amber-100"
+      : "bg-fog border-sand";
+
+  return (
+    <article className={`rounded-[20px] border p-5 ${riskBg}`}>
+      <div className="flex items-center justify-between gap-3">
+        <div className="inline-flex items-center gap-2 rounded-full bg-white px-3 py-1 text-xs font-medium text-olive">
+          <BadgeAlert className="h-3.5 w-3.5" />
+          {item.city || item.channel || "Региональные"}
+        </div>
+        <span className={`text-xs font-semibold ${riskColor}`}>
+          Риск {Math.round(item.risk_score * 100)}%
+        </span>
+      </div>
+
+      <p className="mt-4 text-sm leading-6 text-plum">
+        {item.reformulated || item.summary || item.title}
+      </p>
+
+      {item.distance_km != null && (
+        <p className="mt-2 text-xs text-warmsilver">
+          ~{Math.round(item.distance_km)} км от вас
+        </p>
+      )}
+
+      <div className="mt-4 flex flex-wrap items-center gap-2 text-xs text-warmsilver">
+        <Newspaper className="h-3.5 w-3.5" />
+        <span>{item.channel}</span>
+        {item.published_at && (
+          <>
+            <span>·</span>
+            <span>{new Date(item.published_at).toLocaleString("ru-RU")}</span>
+          </>
+        )}
+        <span>·</span>
+        <span className="rounded-full bg-white px-2 py-0.5 font-medium text-olive">
+          {item.model_used === "rut5+rubert" ? "🧠 Нейросеть" : "📝 AI анализ"}
+        </span>
+      </div>
+    </article>
   );
 }
