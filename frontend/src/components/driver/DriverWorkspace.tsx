@@ -2,7 +2,7 @@
 
 import MapView, { type MapLine, type MapPoint } from "@/components/map/MapView";
 import type { DriverDetail, LiveNewsItem, LiveNewsResult, SessionUser } from "@/lib/api";
-import { getLiveNews } from "@/lib/api";
+import { getAiWeather, getLiveNews } from "@/lib/api";
 import { useGpsEmitter } from "@/hooks/useGpsEmitter";
 import { VoiceAlerts } from "@/components/driver/VoiceAlerts";
 import { useQuery } from "@tanstack/react-query";
@@ -54,6 +54,7 @@ import {
   PackageCheck,
   Route,
   Signal,
+  Thermometer,
   Truck,
   UserRound,
   Warehouse,
@@ -255,6 +256,17 @@ export default function DriverWorkspace({
     enabled: !!liveGpsForQuery && !!endPoint,
     staleTime: 4 * 60_000,
     refetchInterval: 5 * 60_000,
+  });
+
+  // Weather at current GPS position — rounded to ~1km grid to avoid excessive refetches
+  const weatherGridLat = livePosition ? Math.round(livePosition.lat * 100) / 100 : null;
+  const weatherGridLon = livePosition ? Math.round(livePosition.lon * 100) / 100 : null;
+  const { data: posWeather } = useQuery({
+    queryKey: ["driver-weather", weatherGridLat, weatherGridLon],
+    queryFn: () => getAiWeather(weatherGridLat!, weatherGridLon!),
+    enabled: weatherGridLat != null && weatherGridLon != null,
+    staleTime: 10 * 60_000,
+    refetchInterval: 15 * 60_000,
   });
 
   // Add news event markers (live items with geo, expire after 48h)
@@ -465,6 +477,17 @@ export default function DriverWorkspace({
                 value={typeof livePosition?.speed === "number"
                   ? `${Math.round(livePosition.speed)} км/ч`
                   : "нет данных"}
+              />
+              <Parameter
+                icon={<Thermometer className="h-4 w-4" />}
+                label="Температура"
+                value={
+                  posWeather?.temperature != null
+                    ? `${Math.round(posWeather.temperature)}°C${posWeather.description ? ` · ${posWeather.description}` : ""}`
+                    : livePosition
+                    ? "загрузка…"
+                    : "нет GPS"
+                }
               />
               <Parameter
                 icon={<Clock3 className="h-4 w-4" />}

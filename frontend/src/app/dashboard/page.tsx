@@ -545,6 +545,37 @@ export default function DashboardPage() {
     return route || null;
   }, [selectedDriver, drivers, routes]);
 
+  // Fetched OSRM geometry for the selected route when DB geometry is missing
+  const [liveRouteCoords, setLiveRouteCoords] = useState<[number, number][] | null>(null);
+
+  useEffect(() => {
+    setLiveRouteCoords(null);
+    if (!selectedDriverRoute) return;
+    const hasDbGeom = Array.isArray((selectedDriverRoute as any).riskFactors?.routing?.geometry);
+    if (hasDbGeom) return;
+
+    const r = selectedDriverRoute as any;
+    const startLon = r.startLon ?? r.startPoint?.lon;
+    const startLat = r.startLat ?? r.startPoint?.lat;
+    const endLon = r.endLon ?? r.endPoint?.lon;
+    const endLat = r.endLat ?? r.endPoint?.lat;
+    if (startLon == null || startLat == null || endLon == null || endLat == null) return;
+
+    let cancelled = false;
+    fetch(
+      `https://router.project-osrm.org/route/v1/driving/${startLon},${startLat};${endLon},${endLat}?geometries=geojson&overview=full`,
+    )
+      .then((res) => res.json())
+      .then((data) => {
+        if (cancelled) return;
+        const coords = data?.routes?.[0]?.geometry?.coordinates as [number, number][] | undefined;
+        if (coords?.length) setLiveRouteCoords(coords);
+      })
+      .catch(() => {});
+
+    return () => { cancelled = true; };
+  }, [selectedDriverRoute?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const logout = () => {
     clearSession();
     router.replace("/");
@@ -775,25 +806,27 @@ export default function DashboardPage() {
                       }
 
                       if (selectedDriverRoute) {
-                        // Use OSRM geometry if available, else waypoints, else straight line
+                        // Priority: 1) DB OSRM geometry, 2) browser-fetched OSRM, 3) straight line
                         const osrmGeom = Array.isArray((selectedDriverRoute as any).riskFactors?.routing?.geometry)
                           ? (selectedDriverRoute as any).riskFactors.routing.geometry
                           : null;
 
                         const coordinates: [number, number][] = osrmGeom
                           ? osrmGeom.filter((p: any) => p?.lon != null).map((p: any) => [p.lon, p.lat] as [number, number])
-                          : (() => {
-                              const coords: [number, number][] = [];
-                              if (selectedDriverRoute.startLon != null && selectedDriverRoute.startLat != null)
-                                coords.push([selectedDriverRoute.startLon, selectedDriverRoute.startLat]);
-                              if (Array.isArray((selectedDriverRoute as any).waypoints))
-                                (selectedDriverRoute as any).waypoints.forEach((item: any) => {
-                                  if (item?.lon != null && item?.lat != null) coords.push([item.lon, item.lat]);
-                                });
-                              if (selectedDriverRoute.endLon != null && selectedDriverRoute.endLat != null)
-                                coords.push([selectedDriverRoute.endLon, selectedDriverRoute.endLat]);
-                              return coords;
-                            })();
+                          : liveRouteCoords
+                            ? liveRouteCoords
+                            : (() => {
+                                const coords: [number, number][] = [];
+                                if (selectedDriverRoute.startLon != null && selectedDriverRoute.startLat != null)
+                                  coords.push([selectedDriverRoute.startLon, selectedDriverRoute.startLat]);
+                                if (Array.isArray((selectedDriverRoute as any).waypoints))
+                                  (selectedDriverRoute as any).waypoints.forEach((item: any) => {
+                                    if (item?.lon != null && item?.lat != null) coords.push([item.lon, item.lat]);
+                                  });
+                                if (selectedDriverRoute.endLon != null && selectedDriverRoute.endLat != null)
+                                  coords.push([selectedDriverRoute.endLon, selectedDriverRoute.endLat]);
+                                return coords;
+                              })();
 
                         if (coordinates.length > 1) {
                           lines.push({

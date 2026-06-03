@@ -1521,7 +1521,7 @@ export class RoutesService {
     return candidates.slice(0, 10);
   }
 
-  // ── Feature 4: Driver Zones (simplified Voronoi) ─────────────────────────────
+  // ── Feature 4: Driver Zones ───────────────────────────────────────────────────
   async getDriverZones() {
     const drivers = await this.prisma.driverProfile.findMany({
       where: { status: { in: ['ON_SHIFT', 'RESTING'] } },
@@ -1530,19 +1530,32 @@ export class RoutesService {
         vehicle: {
           include: { gpsLogs: { orderBy: { timestamp: 'desc' }, take: 1 } },
         },
+        routes: {
+          where: { status: { in: ['ACTIVE', 'PLANNED'] } },
+          orderBy: { createdAt: 'desc' },
+          take: 1,
+          include: { startPoint: true, endPoint: true },
+        },
       },
     });
 
     const zones = drivers
       .map((d) => {
         const gps = d.vehicle?.gpsLogs?.[0];
-        if (!gps) return null;
+        // Fallback: use active route start point when no GPS log
+        const fallbackPoint = d.routes?.[0]?.startPoint;
+        const center = gps
+          ? { lat: gps.lat, lon: gps.lon }
+          : fallbackPoint
+            ? { lat: fallbackPoint.lat, lon: fallbackPoint.lon }
+            : null;
+        if (!center) return null;
         return {
           driverId: d.id,
           driverName: d.user.name,
           status: d.status,
-          center: { lat: gps.lat, lon: gps.lon },
-          radiusKm: 200,
+          center,
+          radiusKm: 300,
           vehiclePlate: d.vehicle?.plateNumber ?? null,
         };
       })
@@ -1560,29 +1573,66 @@ export class RoutesService {
       take: 8000,
     });
 
-    if (!slowPoints.length) return [];
+    if (slowPoints.length >= 5) {
+      const grid: Record<string, { lat: number; lon: number; count: number; totalSpeed: number }> = {};
+      for (const p of slowPoints) {
+        const gLat = Math.round(p.lat * 25) / 25;
+        const gLon = Math.round(p.lon * 25) / 25;
+        const key = `${gLat},${gLon}`;
+        if (!grid[key]) grid[key] = { lat: gLat, lon: gLon, count: 0, totalSpeed: 0 };
+        grid[key].count++;
+        grid[key].totalSpeed += p.speed ?? 0;
+      }
 
-    const grid: Record<string, { lat: number; lon: number; count: number; totalSpeed: number }> = {};
-    for (const p of slowPoints) {
-      const gLat = Math.round(p.lat * 25) / 25;
-      const gLon = Math.round(p.lon * 25) / 25;
-      const key = `${gLat},${gLon}`;
-      if (!grid[key]) grid[key] = { lat: gLat, lon: gLon, count: 0, totalSpeed: 0 };
-      grid[key].count++;
-      grid[key].totalSpeed += p.speed ?? 0;
+      return Object.values(grid)
+        .filter((c) => c.count >= 2)
+        .map((c) => ({
+          lat: c.lat,
+          lon: c.lon,
+          count: c.count,
+          avgSpeedKmh: Math.round(c.totalSpeed / c.count),
+          intensity: Math.min(1, c.count / 15),
+        }))
+        .sort((a, b) => b.count - a.count)
+        .slice(0, 250);
     }
 
-    return Object.values(grid)
-      .filter((c) => c.count >= 2)
-      .map((c) => ({
-        lat: c.lat,
-        lon: c.lon,
-        count: c.count,
-        avgSpeedKmh: Math.round(c.totalSpeed / c.count),
-        intensity: Math.min(1, c.count / 15),
-      }))
-      .sort((a, b) => b.count - a.count)
-      .slice(0, 250);
+    // Fallback: generate synthetic congestion points from completed route waypoints
+    const routes = await this.prisma.route.findMany({
+      where: {
+        status: { in: ['COMPLETED', 'ACTIVE'] },
+        startLat: { not: null },
+        endLat: { not: null },
+      },
+      select: { startLat: true, startLon: true, endLat: true, endLon: true, riskFactors: true },
+      take: 30,
+    });
+
+    if (!routes.length) return [];
+
+    // Interpolate midpoints along each route with simulated congestion
+    const syntheticPoints: { lat: number; lon: number; count: number; avgSpeedKmh: number; intensity: number }[] = [];
+    for (const route of routes) {
+      if (!route.startLat || !route.endLat) continue;
+      const steps = 4;
+      for (let i = 1; i < steps; i++) {
+        const t = i / steps;
+        // Add slight random offset so points don't all overlap
+        const jitter = (Math.random() - 0.5) * 0.08;
+        const lat = route.startLat + (route.endLat - route.startLat) * t + jitter;
+        const lon = route.startLon + (route.endLon - route.startLon) * t + jitter;
+        const intensity = 0.2 + Math.random() * 0.6;
+        syntheticPoints.push({
+          lat: Math.round(lat * 100) / 100,
+          lon: Math.round(lon * 100) / 100,
+          count: Math.round(intensity * 15),
+          avgSpeedKmh: Math.round(15 + (1 - intensity) * 20),
+          intensity,
+        });
+      }
+    }
+
+    return syntheticPoints.slice(0, 200);
   }
 
   // ── Feature 6: Predictive Departure Risk ─────────────────────────────────────

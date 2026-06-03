@@ -217,6 +217,45 @@ DISCOVERY_CONTEXT_TERMS = {
     "storm",
 }
 
+# Domains that consistently produce SEO spam / aggregator noise instead of real news
+SPAM_DOMAINS: frozenset[str] = frozenset({
+    "driver-helper.ru",
+    "dtp.su",
+    "avtodispetcher.ru",
+    "gibdd.help",
+    "roadauto.ru",
+    "ask.fm",
+    "otvet.mail.ru",
+    "irecommend.ru",
+    "zoon.ru",
+    "flamp.ru",
+    "yell.ru",
+    "tripadvisor.ru",
+})
+
+# Regex patterns that indicate a title is a search-engine breadcrumb or SEO artifact
+_BREADCRUMB_RE = re.compile(r"[›»>]\s*\S")
+# Matches a 4-digit year like 2022 or 2023 in the title
+_OLD_YEAR_RE = re.compile(r"\b(20\d{2})\b")
+
+
+def is_spam_title(title: str) -> bool:
+    """Return True when the title looks like a breadcrumb navigation or SEO snippet."""
+    if _BREADCRUMB_RE.search(title):
+        return True
+    # Reject titles that explicitly mention a year ≥2 years ago
+    current_year = utc_now().year
+    for m in _OLD_YEAR_RE.finditer(title):
+        if int(m.group(1)) <= current_year - 2:
+            return True
+    return False
+
+
+def is_spam_domain(url: str | None) -> bool:
+    domain = extract_result_domain(url)
+    return bool(domain and domain in SPAM_DOMAINS)
+
+
 _news_collector: "NewsCollector | None" = None
 _reverse_geocode_cache: dict[str, dict[str, Any]] = {}
 
@@ -681,6 +720,15 @@ class NewsStorage:
                 "DELETE FROM news_items WHERE published_at < ?",
                 (cutoff.isoformat(),),
             )
+            # Also purge any previously-stored spam items
+            spam_conditions = " OR ".join(
+                "url LIKE ?" for _ in SPAM_DOMAINS
+            )
+            spam_params = tuple(f"%{domain}%" for domain in SPAM_DOMAINS)
+            connection.execute(
+                f"DELETE FROM news_items WHERE {spam_conditions}",
+                spam_params,
+            )
             connection.commit()
             return cursor.rowcount or 0
 
@@ -1112,6 +1160,7 @@ def parse_html_document(
     base_url: str,
 ) -> list[ParsedNewsItem]:
     soup = BeautifulSoup(html, "html.parser")
+    is_telegram = "t.me" in base_url
     item_selector = str(source_config.get("item_selector") or "article")
     title_selector = source_config.get("title_selector")
     summary_selector = source_config.get("summary_selector")
@@ -1130,28 +1179,51 @@ def parse_html_document(
     max_items = int(source_config.get("max_items") or DEFAULT_MAX_ITEMS * 2)
 
     for node in nodes[:max_items]:
-        title = extract_node_text(node, title_selector) or extract_node_text(
-            node, "h1, h2, h3"
-        )
-        if not title:
-            continue
+        if is_telegram:
+            # Telegram public pages: text is in .tgme_widget_message_text
+            text_node = node.select_one(".tgme_widget_message_text")
+            raw_text = clean_text(text_node.get_text(" ", strip=True)) if text_node else ""
+            if not raw_text or len(raw_text) < 20:
+                continue
+            # Use first sentence (up to 120 chars) as title, rest as summary
+            first_sentence_end = raw_text.find(". ", 0, 120)
+            if first_sentence_end > 10:
+                title_str = raw_text[: first_sentence_end + 1]
+                summary_str = raw_text[first_sentence_end + 2 :]
+            else:
+                title_str = truncate_text(raw_text, 120)
+                summary_str = raw_text
+            time_node = node.select_one("time[datetime]")
+            raw_date = time_node.get("datetime") if time_node else None
+            link_node = node.select_one("a.tgme_widget_message_date")
+            raw_link = link_node.get("href") if link_node else None
+        else:
+            title_str = extract_node_text(node, title_selector) or extract_node_text(
+                node, "h1, h2, h3"
+            )
+            if not title_str:
+                continue
+            summary_str = extract_node_text(node, summary_selector) or truncate_text(
+                clean_text(node.get_text(" ", strip=True)),
+                600,
+            )
+            raw_link = extract_node_link(node, link_selector)
+            raw_date = extract_node_value(node, date_selector, date_attr)
 
-        summary = extract_node_text(node, summary_selector) or truncate_text(
-            clean_text(node.get_text(" ", strip=True)),
-            600,
-        )
-        raw_link = extract_node_link(node, link_selector)
-        raw_date = extract_node_value(node, date_selector, date_attr)
-        city = extract_node_text(node, city_selector) or source_config.get("city")
+        city = extract_node_text(node, city_selector) if city_selector else source_config.get("city")
         lat = parse_optional_float(node.get(lat_attr)) if lat_attr else None
         lon = parse_optional_float(node.get(lon_attr)) if lon_attr else None
+
+        clean_title_html = clean_text(title_str)
+        if not clean_title_html or is_spam_title(clean_title_html):
+            continue
 
         items.append(
             ParsedNewsItem(
                 source=platform,
                 channel=channel,
-                title=clean_text(title),
-                summary=truncate_text(clean_text(summary), 600),
+                title=clean_title_html,
+                summary=truncate_text(clean_text(summary_str), 600),
                 published_at=parse_datetime(raw_date),
                 url=urljoin(base_url, raw_link) if raw_link else base_url,
                 city=clean_text(city) if city else None,
@@ -1198,11 +1270,15 @@ def parse_rss_document(
         link = first_xml_link(node) or source_url or feed_url
         lat, lon = first_xml_geo(node)
 
+        clean_title_rss = clean_text(title)
+        if not clean_title_rss or is_spam_title(clean_title_rss) or is_spam_domain(link):
+            continue
+
         items.append(
             ParsedNewsItem(
                 source=source_name or platform,
                 channel=channel,
-                title=clean_text(title),
+                title=clean_title_rss,
                 summary=truncate_text(clean_text(summary), 600),
                 published_at=published_at,
                 url=link,
@@ -1950,7 +2026,7 @@ def build_route_search_queries(
     *,
     provider: str | None = None,
 ) -> list[str]:
-    del lookback_hours
+    when_days = max(1, min(7, math.ceil(max(1, lookback_hours) / 24)))
 
     location = normalize_locality_label(str(locality.get("name") or "").strip())
     region = normalize_locality_label(str(locality.get("region") or "").strip())
@@ -1984,6 +2060,10 @@ def build_route_search_queries(
         ).strip()
         for template in general_templates
     ]
+
+    # Append date filter for Google News RSS so only recent articles are returned
+    if provider == "google-news-rss" or provider is None:
+        queries = [f"{q} when:{when_days}d" for q in queries]
 
     if provider in {"brave-html", "duckduckgo-html", "bing-html"}:
         for site in public_sites:
@@ -2146,6 +2226,8 @@ def build_search_result_item(
     clean_title = clean_text(title)
     clean_summary = truncate_text(clean_text(summary or title), 600)
     if not clean_title or not url:
+        return None
+    if is_spam_title(clean_title) or is_spam_domain(url):
         return None
 
     return ParsedNewsItem(
@@ -2622,8 +2704,9 @@ async def get_cached_news_feed(
         limit=max(max_items * 6, 50),
     )
     if not items:
+        # Extend window to at most 3 days — avoid surfacing year-old cached articles
         items = collector.storage.get_recent_items(
-            lookback_hours=24 * 365,
+            lookback_hours=72,
             limit=max(max_items * 6, 50),
         )
         stale_items_used = bool(items)
@@ -2678,8 +2761,9 @@ async def assess_route_news(
             limit=max(max_items * 8, 80),
         )
     if not items:
+        # Extend window to at most 3 days — never show year-old cached articles
         items = collector.storage.get_recent_items(
-            lookback_hours=24 * 365,
+            lookback_hours=72,
             limit=max(max_items * 8, 80),
         )
         stale_items_used = bool(items)

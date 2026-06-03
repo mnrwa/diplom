@@ -339,6 +339,26 @@ export default function MapView({
     };
   }, []);
 
+  // Force resize when map becomes ready — fixes blank tiles in hidden tab containers
+  useEffect(() => {
+    const runtime = runtimeRef.current;
+    if (!runtime || !ready || runtime.kind !== "fallback") return;
+    runtime.map.resize();
+  }, [ready]);
+
+  // ResizeObserver: resize map whenever the host container changes size
+  useEffect(() => {
+    const host = hostRef.current;
+    if (!host || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => {
+      const rt = runtimeRef.current;
+      if (!rt || rt.kind !== "fallback") return;
+      rt.map.resize();
+    });
+    ro.observe(host);
+    return () => ro.disconnect();
+  }, []);
+
   useEffect(() => {
     const runtime = runtimeRef.current;
     if (!runtime || !ready) return;
@@ -508,7 +528,10 @@ export default function MapView({
   };
 
   return (
-    <div className={`relative overflow-hidden rounded-[28px] border border-sand/80 shadow-card${containerClassName ? ` ${containerClassName}` : ""}`} style={{ contain: "layout style paint" }}>
+    <div
+      className={`relative overflow-hidden rounded-[28px] border border-sand/80${containerClassName ? ` ${containerClassName}` : ""}`}
+      style={{ isolation: "isolate" }}
+    >
       <div ref={hostRef} className={className} />
 
       <div className="pointer-events-none absolute bottom-4 right-4 z-20 flex flex-col gap-2">
@@ -620,6 +643,22 @@ function initFallbackMap(
   };
 
   map.on("load", markReady);
+  map.on("styledata", () => {
+    // Catch late-firing styledata events (e.g. on style reload) and mark ready
+    if (!runtimeRef.current) return;
+    if (!map.isStyleLoaded()) return;
+    setReady(true);
+  });
+  map.on("error", (e) => {
+    console.warn("[MapView] MapLibre error:", e?.error?.message ?? e);
+    // If the style failed to load, forcibly mark ready so the map container
+    // is at least usable (tiles may be missing but interactions still work).
+    if (!map.isStyleLoaded()) {
+      setTimeout(() => {
+        if (runtimeRef.current) setReady(true);
+      }, 500);
+    }
+  });
 
   map.on("click", (event) => {
     const features = map.queryRenderedFeatures(event.point) ?? [];
@@ -665,11 +704,13 @@ function initFallbackMap(
   };
   runtimeRef.current = runtime;
 
-  map.on("zoom", () => {
+  const onZoomOrMove = () => {
     const rt = runtimeRef.current;
     if (!rt || rt.kind !== "fallback") return;
     updateDriverVisibility(rt);
-  });
+  };
+  map.on("zoomend", onZoomOrMove);
+  map.on("zoom", onZoomOrMove);
 }
 
 function syncDgisLines(runtime: DgisRuntime, lines: MapLine[]) {
@@ -1237,11 +1278,15 @@ const ZONE_LINE_LAYER   = "velto-zone-line";
 
 /** Hide/show individual driver HTML markers depending on zoom (cluster takes over at low zoom). */
 function updateDriverVisibility(runtime: FallbackRuntime) {
-  const show = runtime.map.getZoom() >= CLUSTER_MAX_ZOOM;
+  const zoom = runtime.map.getZoom();
+  if (!Number.isFinite(zoom)) return;
+  const show = zoom >= CLUSTER_MAX_ZOOM;
   runtime.markers.forEach((record) => {
     if (record.kind === "driver" || record.kind === "vehicle") {
-      record.element.style.visibility = show ? "visible" : "hidden";
-      record.element.style.pointerEvents = show ? "" : "none";
+      // Use the MapLibre wrapper element (.maplibregl-marker) so the whole marker
+      // including pulse rings is hidden — avoids click-through ghosts.
+      const wrapper = record.element.parentElement ?? record.element;
+      wrapper.style.display = show ? "" : "none";
     }
   });
 }
@@ -1259,19 +1304,33 @@ async function syncRainViewer(runtime: FallbackRuntime, show: boolean) {
   if (!show) { cleanup(); return; }
   if (runtime.hasRainViewer) return;
 
+  // Wait for style to be loaded
   if (!map.isStyleLoaded()) {
-    map.once("style.load", () => { void syncRainViewer(runtime, show); });
-    return;
+    await new Promise<void>((resolve) => map.once("style.load", resolve));
   }
 
   try {
-    const res = await fetch("https://api.rainviewer.com/public/weather-maps.json");
-    const data = await res.json() as { radar?: { past?: { path: string }[] } };
-    const frames = data?.radar?.past ?? [];
+    const res = await fetch("https://api.rainviewer.com/public/weather-maps.json", {
+      cache: "no-store",
+    });
+    if (!res.ok) throw new Error(`RainViewer API ${res.status}`);
+
+    const data = await res.json() as {
+      host?: string;
+      radar?: { past?: { path: string; time: number }[]; nowcast?: { path: string }[] };
+    };
+
+    // Prefer nowcast (real-time), fall back to latest past frame
+    const host = data.host ?? "https://tilecache.rainviewer.com";
+    const frames = [
+      ...(data.radar?.nowcast ?? []),
+      ...(data.radar?.past ?? []),
+    ];
     if (!frames.length) return;
 
-    const latest = frames[frames.length - 1];
-    const tileUrl = `https://tilecache.rainviewer.com${latest.path}/256/{z}/{x}/{y}/2/1_1.png`;
+    // Pick the most recent frame
+    const latest = (data.radar?.past ?? []).at(-1) ?? frames[0];
+    const tileUrl = `${host}${latest.path}/256/{z}/{x}/{y}/2/1_1.png`;
 
     cleanup();
 
@@ -1286,12 +1345,12 @@ async function syncRainViewer(runtime: FallbackRuntime, show: boolean) {
       id: RAINVIEWER_LAYER,
       type: "raster",
       source: RAINVIEWER_SOURCE,
-      paint: { "raster-opacity": 0.72 },
+      paint: { "raster-opacity": 0.75 },
     });
 
     runtime.hasRainViewer = true;
-  } catch {
-    // RainViewer unavailable, skip silently
+  } catch (e) {
+    console.warn("[MapView] RainViewer unavailable:", e);
   }
 }
 

@@ -499,20 +499,49 @@ export default function DriverAdminPage() {
               </div>
               {data.newsFeed && data.newsFeed.length > 0 ? (
                 <div className="flex flex-col divide-y divide-[#F2EEE8]">
-                  {data.newsFeed.slice(0, 5).map((item) => (
-                    <div key={item.id} className="flex items-start gap-3 py-3 first:pt-0 last:pb-0">
-                      <span className={`mt-1.5 h-2 w-2 shrink-0 rounded-full ${severityDot(item.severity)}`} />
-                      <div className="min-w-0 flex-1">
-                        <p className="text-sm font-medium text-[#1A1916] leading-snug">{item.title}</p>
-                        {item.summary && (
-                          <p className="text-xs text-[#948C84] mt-0.5 line-clamp-1">{item.summary}</p>
-                        )}
+                  {data.newsFeed.slice(0, 6).map((item) => {
+                    const pubDate = new Date(item.publishedAt);
+                    const now = new Date();
+                    const isToday = pubDate.toDateString() === now.toDateString();
+                    const timeLabel = isToday
+                      ? pubDate.toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" })
+                      : pubDate.toLocaleDateString("ru-RU", { day: "numeric", month: "short" }) +
+                        " " + pubDate.toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
+                    const sourcePlatform = item.channel ?? item.source ?? "";
+                    const isTg = sourcePlatform.toLowerCase().includes("telegram") || sourcePlatform.startsWith("@");
+                    const isVk = sourcePlatform.toLowerCase().includes("vk");
+                    const sourceLabel = isTg ? "Telegram" : isVk ? "VK" : item.source;
+                    return (
+                      <div key={item.id} className="flex items-start gap-3 py-3 first:pt-0 last:pb-0">
+                        <span className={`mt-1.5 h-2 w-2 shrink-0 rounded-full ${severityDot(item.severity)}`} />
+                        <div className="min-w-0 flex-1">
+                          {item.url ? (
+                            <a
+                              href={item.url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-sm font-medium text-[#1A1916] leading-snug hover:underline"
+                            >
+                              {item.title}
+                            </a>
+                          ) : (
+                            <p className="text-sm font-medium text-[#1A1916] leading-snug">{item.title}</p>
+                          )}
+                          <div className="flex items-center gap-2 mt-0.5">
+                            {sourceLabel && (
+                              <span className="text-xs text-[#948C84]">{sourceLabel}</span>
+                            )}
+                            {item.city && (
+                              <span className="text-xs text-[#948C84]">· {item.city}</span>
+                            )}
+                          </div>
+                        </div>
+                        <span className="shrink-0 text-xs text-[#948C84] whitespace-nowrap">
+                          {timeLabel}
+                        </span>
                       </div>
-                      <span className="shrink-0 text-xs text-[#948C84] whitespace-nowrap">
-                        {new Date(item.publishedAt).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" })}
-                      </span>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               ) : (
                 <p className="text-sm text-[#948C84] text-center py-4">Нет дорожных предупреждений</p>
