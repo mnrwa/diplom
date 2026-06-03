@@ -5,24 +5,24 @@
   "devFiles": [],
   "ampDevFiles": [],
   "lowPriorityFiles": [
-    "static/wsR-vX7g8qgCMtkU_ibrO/_buildManifest.js",
-    "static/wsR-vX7g8qgCMtkU_ibrO/_ssgManifest.js"
+    "static/YeZKTHYdzMYzuyp-6ddjG/_buildManifest.js",
+    "static/YeZKTHYdzMYzuyp-6ddjG/_ssgManifest.js"
   ],
   "rootMainFiles": [
-    "static/chunks/webpack-e089af2ba853a06e.js",
+    "static/chunks/webpack-5c352760d4292fa9.js",
     "static/chunks/059fb640-4427f873e9b9240d.js",
     "static/chunks/163-5407661b4ec7ed21.js",
     "static/chunks/main-app-1d64625ec6e04e92.js"
   ],
   "pages": {
     "/_app": [
-      "static/chunks/webpack-e089af2ba853a06e.js",
+      "static/chunks/webpack-5c352760d4292fa9.js",
       "static/chunks/framework-af9bb692fc090ad1.js",
       "static/chunks/main-bb19c6c21cd40bf6.js",
       "static/chunks/pages/_app-f56971206fd47296.js"
     ],
     "/_error": [
-      "static/chunks/webpack-e089af2ba853a06e.js",
+      "static/chunks/webpack-5c352760d4292fa9.js",
       "static/chunks/framework-af9bb692fc090ad1.js",
       "static/chunks/main-bb19c6c21cd40bf6.js",
       "static/chunks/pages/_error-7908b47aff2bca05.js"

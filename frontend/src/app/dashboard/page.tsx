@@ -1366,9 +1366,9 @@ export default function DashboardPage() {
                         </div>
                       ))}
                     </div>
-                    <p className="text-xs text-warmsilver">
+                    {/* <p className="text-xs text-warmsilver">
                       Источник: {eta.source === "xgboost" ? `XGBoost (MAE ±${eta.model_mae_min} мин)` : "Аналитическая модель"}
-                    </p>
+                    </p> */}
                   </div>
                 );
               })()}
