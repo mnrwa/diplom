@@ -191,8 +191,12 @@ def formula_vec(df: pd.DataFrame) -> np.ndarray:
 def train_models(df: pd.DataFrame) -> dict:
     X = df[FEATURES].values
     y = df[TARGET].values
-    X_tr, X_ts, y_tr, y_ts = train_test_split(X, y, test_size=0.20, random_state=42)
-    df_ts = df.iloc[len(df) - len(y_ts):]
+    # Индексный сплит — df_ts будет ТОЧНО соответствовать y_ts
+    idx_all = np.arange(len(df))
+    idx_tr, idx_ts = train_test_split(idx_all, test_size=0.20, random_state=42)
+    X_tr, X_ts = X[idx_tr], X[idx_ts]
+    y_tr, y_ts = y[idx_tr], y[idx_ts]
+    df_ts = df.iloc[idx_ts].reset_index(drop=True)
 
     # Линейная регрессия
     print("  Линейная регрессия...", end=" ", flush=True)
@@ -236,14 +240,17 @@ def plot_learning_curve(ax, df: pd.DataFrame, m: dict):
     sizes  = [s for s in sizes if s <= int(len(df) * 0.8)]
     X_all  = df[FEATURES].values
     y_all  = df[TARGET].values
-    _, X_ts, _, y_ts = train_test_split(X_all, y_all, test_size=0.20, random_state=42)
+    # Используем тот же тестовый набор что и train_models
+    X_ts   = m["X_ts"]
+    y_ts   = m["y_ts"]
 
-    f_mae  = mean_absolute_error(formula_vec(m["df_ts"]), m["df_ts"][TARGET].values)
+    f_mae  = mean_absolute_error(formula_vec(m["df_ts"]), y_ts)
     lr_maes, nn_maes = [], []
 
-    rng    = np.random.default_rng(7)
-    X_pool = X_all[:int(len(df)*0.8)]
-    y_pool = y_all[:int(len(df)*0.8)]
+    rng     = np.random.default_rng(7)
+    idx_tr  = train_test_split(np.arange(len(df)), test_size=0.20, random_state=42)[0]
+    X_pool  = X_all[idx_tr]
+    y_pool  = y_all[idx_tr]
 
     for sz in sizes:
         idx = rng.choice(len(X_pool), min(sz, len(X_pool)), replace=False)
@@ -263,14 +270,14 @@ def plot_learning_curve(ax, df: pd.DataFrame, m: dict):
     ax.plot(sizes[:len(lr_maes)], lr_maes, "s-", color=C["lr"], lw=2, markersize=6,
             label="Линейная регрессия")
     ax.plot(sizes[:len(nn_maes)], nn_maes, "o-", color=C["nn"], lw=2, markersize=6,
-            label="нейронная сеть (MLP)")
+            label="Нейронная сеть (MLP)")
 
     ax.fill_between(sizes[:len(nn_maes)], nn_maes, f_mae,
                     where=[v < f_mae for v in nn_maes],
                     color=C["good"], alpha=0.10)
 
     ax.set_xscale("log")
-    _style(ax, "① Точность моделей по мере накопления рейсов",
+    _style(ax, "Точность моделей по мере накопления рейсов",
            "Кол-во исторических рейсов", "MAE (мин)")
     ax.legend(fontsize=9, framealpha=0.92)
 
@@ -306,10 +313,10 @@ def plot_eta_comparison(ax, m: dict):
         mae = mean_absolute_error(actual_cap, pc)
         r2  = r2_score(actual_cap, pc)
         ax.scatter(pc, actual_cap, alpha=0.12, s=5, color=col, marker=mk,
-                   label=f"{name}  MAE={mae:.0f}м  R²={r2:.3f}")
+                   label=f"{name}  MAE={mae:.0f} мин  R²={r2:.3f}")
 
     ax.plot([0, cap], [0, cap], "--", color="#475569", lw=1.4, label="Идеал")
-    _style(ax, "② Факт vs Прогноз ETA", "Прогноз (мин)", "Фактическое время (мин)")
+    _style(ax, "Факт vs Прогноз ETA", "Прогноз (мин)", "Фактическое время (мин)")
     ax.set_xlim(0, cap); ax.set_ylim(0, cap)
     ax.legend(fontsize=8.5, framealpha=0.92)
 
@@ -348,7 +355,7 @@ def plot_feature_importance(ax, m: dict):
 
     ax.set_yticks(y_pos)
     ax.set_yticklabels(labels, fontsize=8)
-    _style(ax, "③ Важность признаков: линейная регрессия vs нейронная сеть")
+    _style(ax, "Важность признаков: линейная регрессия vs нейронная сеть")
     ax.legend(fontsize=8.5, framealpha=0.92)
     ax.text(0.98, 0.03, "★ оранжевая рамка = историческое среднее сегмента",
             transform=ax.transAxes, ha="right", va="bottom",
@@ -385,7 +392,7 @@ def plot_loss_curve(ax, m: dict):
                 arrowprops=dict(arrowstyle="->", color=C["warn"], lw=0.9),
                 fontsize=8, color=C["warn"])
 
-    _style(ax, f"④ Как нейронная сеть обучалась ({len(curve)} эпох) vs линейная регрессия",
+    _style(ax, f"Кривая обучения нейронной сети ({len(curve)} эпох)",
            "Эпоха", "MSE loss (лог)")
     ax.set_yscale("log")
     ax.legend(fontsize=8.5, framealpha=0.92)
@@ -406,23 +413,30 @@ def plot_error_distribution(ax, m: dict):
     X_ts  = m["X_ts"]
 
     series = [
-        ("Формула",            formula_vec(df_ts)           - y_ts, C["formula"]),
-        ("Линейная регрессия", m["lr_pipe"].predict(X_ts)   - y_ts, C["lr"]),
-        ("нейронная сеть (MLP)",     m["nn_pipe"].predict(X_ts)   - y_ts, C["nn"]),
+        ("Формула",              formula_vec(df_ts)         - y_ts, C["formula"]),
+        ("Линейная регрессия",   m["lr_pipe"].predict(X_ts) - y_ts, C["lr"]),
+        ("Нейронная сеть (MLP)", m["nn_pipe"].predict(X_ts) - y_ts, C["nn"]),
     ]
 
-    bins = np.linspace(-260, 260, 85)
+    # Динамический диапазон по 2-98 перцентилю — не даёт кривым быть плоскими
+    all_r  = np.concatenate([s[1] for s in series])
+    p2, p98 = np.percentile(all_r, 2), np.percentile(all_r, 98)
+    margin = max(abs(p2), abs(p98)) * 1.15
+    bins   = np.linspace(-margin, margin, 80)
+    x_kde  = np.linspace(-margin, margin, 600)
+
     for name, resid, col in series:
-        mu, sig = float(np.mean(resid)), float(np.std(resid))
-        mae     = float(np.mean(np.abs(resid)))
+        mu  = float(np.mean(resid))
+        sig = float(np.std(resid))
+        mae = float(np.mean(np.abs(resid)))
         ax.hist(resid, bins=bins, color=col, alpha=0.25, density=True)
-        x = np.linspace(-260, 260, 500)
-        ax.plot(x, np.exp(-0.5*((x-mu)/sig)**2) / (sig*(2*np.pi)**0.5),
-                color=col, lw=2.2,
-                label=f"{name}  MAE={mae:.0f}м  σ={sig:.0f}м  смещ={mu:+.0f}м")
+        kde = np.exp(-0.5 * ((x_kde - mu) / sig) ** 2) / (sig * (2 * np.pi) ** 0.5)
+        ax.plot(x_kde, kde, color=col, lw=2.4,
+                label=f"{name}  MAE={mae:.0f} мин  σ={sig:.0f} мин")
 
     ax.axvline(0, color=C["text"], lw=1.5, ls="--", alpha=0.5, label="0 = идеал")
-    _style(ax, "⑤ Распределение ошибок: Формула → Лин. регрессия → нейронная сеть",
+    ax.set_xlim(-margin, margin)
+    _style(ax, "Распределение ошибок прогноза ETA",
            "Ошибка: прогноз − факт (мин)", "Плотность")
     ax.legend(fontsize=8.5, framealpha=0.92)
 
@@ -462,7 +476,7 @@ def plot_risk_timeline(ax):
     ax.fill_between(km, 0, total, where=repair, color=C["bad"],
                     alpha=0.12, label="Зона ремонта дороги")
     ax.set_ylim(0, 1)
-    _style(ax, "⑥ Динамика risk_score по маршруту (Москва → Н.Новгород 430 км)",
+    _style(ax, "Динамика risk_score по маршруту (Москва → Н.Новгород 430 км)",
            "Пройдено (км)", "risk_score")
     ax.legend(fontsize=8.5, framealpha=0.92, loc="upper right")
 
@@ -537,7 +551,7 @@ def plot_before_after(ax, m: dict):
 
     ax.set_xticks(x)
     ax.set_xticklabels(labels, fontsize=10)
-    _style(ax, "⑦ До / После: MAE по типам маршрутов  (Формула → Лин. регрессия → нейронная сеть)",
+    _style(ax, "До / После: MAE по типам маршрутов",
            "Тип маршрута", "MAE (мин)")
     ax.legend(fontsize=9, framealpha=0.92, loc="upper right")
 
@@ -551,6 +565,120 @@ def plot_before_after(ax, m: dict):
             f"нейронная сеть: {mae_nn:.1f} мин (−{(mae_f-mae_nn)/mae_f*100:.0f}%)",
             transform=ax.transAxes, va="top", fontsize=9, color=C["text"],
             bbox=dict(boxstyle="round,pad=0.4", facecolor="white", alpha=0.90))
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  ГРАФИК 8 — Сводная таблица метрик (для РПЗ)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def plot_metrics_summary(fig, m: dict):
+    import math as _math
+
+    y_ts  = m["y_ts"]
+    df_ts = m["df_ts"]
+    X_ts  = m["X_ts"]
+
+    def _metrics(y_true, y_pred):
+        mae  = mean_absolute_error(y_true, y_pred)
+        rmse = _math.sqrt(float(np.mean((y_true - y_pred) ** 2)))
+        mape = float(np.mean(np.abs((y_true - y_pred) / np.clip(y_true, 1, None))) * 100)
+        r2   = r2_score(y_true, y_pred)
+        return mae, rmse, mape, r2
+
+    f_pred  = formula_vec(df_ts)
+    lr_pred = m["lr_pipe"].predict(X_ts)
+    nn_pred = m["nn_pipe"].predict(X_ts)
+
+    mae_f,  rmse_f,  mape_f,  r2_f  = _metrics(y_ts, f_pred)
+    mae_lr, rmse_lr, mape_lr, r2_lr = _metrics(y_ts, lr_pred)
+    mae_nn, rmse_nn, mape_nn, r2_nn = _metrics(y_ts, nn_pred)
+
+    # ── Компоновка: таблица сверху, 3 диаграммы снизу ────────────────────────
+    gs = fig.add_gridspec(2, 3, hspace=0.52, wspace=0.35,
+                          left=0.06, right=0.97, top=0.88, bottom=0.07)
+    ax_tbl = fig.add_subplot(gs[0, :])   # вся верхняя строка — таблица
+    ax_mae = fig.add_subplot(gs[1, 0])
+    ax_rmse= fig.add_subplot(gs[1, 1])
+    ax_r2  = fig.add_subplot(gs[1, 2])
+
+    # ── Таблица ───────────────────────────────────────────────────────────────
+    ax_tbl.axis("off")
+
+    col_labels = ["Метод", "MAE, мин ↓", "RMSE, мин ↓", "MAPE, % ↓", "R² ↑",
+                  "∆MAE vs формула", "∆MAPE vs формула"]
+    rows_data = [
+        ["Аналитическая формула",
+         f"{mae_f:.1f}", f"{rmse_f:.1f}", f"{mape_f:.1f}", f"{r2_f:.3f}",
+         "—", "—"],
+        ["Линейная регрессия",
+         f"{mae_lr:.1f}", f"{rmse_lr:.1f}", f"{mape_lr:.1f}", f"{r2_lr:.3f}",
+         f"−{(mae_f-mae_lr)/mae_f*100:.1f}%", f"−{(mape_f-mape_lr)/mape_f*100:.1f}%"],
+        ["Нейронная сеть (MLP)",
+         f"{mae_nn:.1f}", f"{rmse_nn:.1f}", f"{mape_nn:.1f}", f"{r2_nn:.3f}",
+         f"−{(mae_f-mae_nn)/mae_f*100:.1f}%", f"−{(mape_f-mape_nn)/mape_f*100:.1f}%"],
+    ]
+
+    row_colors = [
+        [C["formula"] + "33"] * len(col_labels),
+        [C["lr"]      + "33"] * len(col_labels),
+        [C["nn"]      + "33"] * len(col_labels),
+    ]
+
+    tbl = ax_tbl.table(
+        cellText=rows_data,
+        colLabels=col_labels,
+        cellLoc="center",
+        loc="center",
+        cellColours=row_colors,
+    )
+    tbl.auto_set_font_size(False)
+    tbl.set_fontsize(10)
+    tbl.scale(1, 2.2)
+
+    # Заголовок столбцов — жирный
+    for j in range(len(col_labels)):
+        tbl[0, j].set_facecolor(C["text"])
+        tbl[0, j].set_text_props(color="white", fontweight="bold")
+
+    # Выделяем лучшие значения (нейронная сеть) зелёным
+    for j in [1, 2, 3, 4, 5, 6]:
+        tbl[3, j].set_text_props(color=C["good"], fontweight="bold")
+
+    ax_tbl.set_title("Сравнительная таблица метрик качества прогнозирования ETA",
+                     fontsize=11, fontweight="bold", color=C["text"], pad=6)
+
+    # ── Диаграммы ─────────────────────────────────────────────────────────────
+    names  = ["Формула", "Лин.\nрегрессия", "Нейронная\nсеть (MLP)"]
+    colors = [C["formula"], C["lr"], C["nn"]]
+    x      = np.arange(3)
+
+    def _bar(ax, vals, title, ylabel, fmt="{:.1f}", best="min"):
+        bars = ax.bar(x, vals, color=colors, alpha=0.85, width=0.5, zorder=3)
+        for bar, v in zip(bars, vals):
+            ax.text(bar.get_x() + bar.get_width()/2,
+                    bar.get_height() + max(vals)*0.02,
+                    fmt.format(v), ha="center", va="bottom",
+                    fontsize=9, fontweight="bold", color=C["text"])
+        # Выделяем лучший столбец
+        best_i = int(np.argmin(vals)) if best == "min" else int(np.argmax(vals))
+        bars[best_i].set_edgecolor(C["good"])
+        bars[best_i].set_linewidth(2.5)
+
+        ax.set_xticks(x)
+        ax.set_xticklabels(names, fontsize=8.5)
+        _style(ax, title, ylabel=ylabel)
+
+    _bar(ax_mae,  [mae_f,  mae_lr,  mae_nn],  "MAE — средняя ошибка",       "минуты ↓")
+    _bar(ax_rmse, [rmse_f, rmse_lr, rmse_nn], "RMSE — квадратичная ошибка", "минуты ↓")
+    _bar(ax_r2,   [r2_f,   r2_lr,   r2_nn],   "R² — коэффициент детерминации",
+         "0–1 (↑ лучше)", fmt="{:.3f}", best="max")
+
+    # Стрелка улучшения на MAE
+    gain = (mae_f - mae_nn) / mae_f * 100
+    ax_mae.annotate(f"−{gain:.0f}%\nлучше формулы",
+                    xy=(2, mae_nn), xytext=(1.3, mae_f * 0.7),
+                    arrowprops=dict(arrowstyle="-|>", color=C["good"], lw=1.2),
+                    fontsize=8.5, color=C["good"], fontweight="bold", ha="center")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -584,26 +712,30 @@ def main():
     print("\n[3/3] Построение графиков...")
 
     charts = [
-        ("① Точность по рейсам",       (12, 6.5), lambda fig: plot_learning_curve(    fig.add_subplot(111), df, m)),
-        ("② Факт vs Прогноз ETA",       (9,  8.5), lambda fig: plot_eta_comparison(    fig.add_subplot(111), m)),
-        ("③ Важность признаков",        (12, 7.5), lambda fig: plot_feature_importance(fig.add_subplot(111), m)),
-        ("④ Кривая обучения нейронной сети",  (11, 6.5), lambda fig: plot_loss_curve(        fig.add_subplot(111), m)),
-        ("⑤ Распределение ошибок",      (12, 6.5), lambda fig: plot_error_distribution(fig.add_subplot(111), m)),
-        ("⑥ Risk score по маршруту",    (13, 6.5), lambda fig: plot_risk_timeline(     fig.add_subplot(111))),
-        ("⑦ До / После по типам",       (14, 7.5), lambda fig: plot_before_after(      fig.add_subplot(111), m)),
+        ("① Точность по рейсам",            (12, 6.5), lambda fig: plot_learning_curve(    fig.add_subplot(111), df, m)),
+        ("Факт vs Прогноз ETA",            (9,  8.5), lambda fig: plot_eta_comparison(    fig.add_subplot(111), m)),
+        ("③ Важность признаков",             (12, 7.5), lambda fig: plot_feature_importance(fig.add_subplot(111), m)),
+        ("④ Кривая обучения нейронной сети", (11, 6.5), lambda fig: plot_loss_curve(        fig.add_subplot(111), m)),
+        ("⑤ Распределение ошибок",           (12, 6.5), lambda fig: plot_error_distribution(fig.add_subplot(111), m)),
+        ("⑥ Risk score по маршруту",         (13, 6.5), lambda fig: plot_risk_timeline(     fig.add_subplot(111))),
+        ("⑦ До / После по типам",            (14, 7.5), lambda fig: plot_before_after(      fig.add_subplot(111), m)),
+        ("⑧ Сводные метрики — результаты",   (16, 9.0), lambda fig: plot_metrics_summary(   fig, m)),
     ]
+    n_charts = len(charts)
 
     if args.save:
         out_dir = ROOT / "model" / "charts"
         out_dir.mkdir(parents=True, exist_ok=True)
 
     for i, (title, size, draw_fn) in enumerate(charts, 1):
-        print(f"  [{i}/7] {title}...", flush=True)
+        print(f"  [{i}/{n_charts}] {title}...", flush=True)
         fig = plt.figure(figsize=size, facecolor="white", num=title)
         fig.suptitle(f"VELTO Logistics — {title}",
                      fontsize=12, fontweight="bold", color=C["text"], y=0.998)
         draw_fn(fig)
-        fig.tight_layout(rect=[0, 0, 1, 0.97])
+        # График 8 управляет своей компоновкой сам (GridSpec), не вызываем tight_layout
+        if i < n_charts:
+            fig.tight_layout(rect=[0, 0, 1, 0.97])
 
         if args.save:
             slug     = title.split()[1].replace("/", "_")
@@ -612,10 +744,11 @@ def main():
             print(f"         Сохранено: {out_path}")
 
     if not args.save:
-        print(f"\n  Открываю 7 окон matplotlib...")
+        print(f"\n  Открываю {n_charts} окон matplotlib...")
         plt.show()
 
 
 if __name__ == "__main__":
     main()
+
 

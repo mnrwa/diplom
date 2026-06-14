@@ -26,6 +26,7 @@ import {
 import {
   getDriver,
   getDriverTelematics,
+  getRouteGeometry,
   type DriverDetail,
   type TelematicsResult,
 } from "@/lib/api";
@@ -188,6 +189,14 @@ export default function DriverAdminPage() {
     refetchInterval: 30_000,
   });
 
+  const activeRouteId = data?.activeRoute?.id;
+  const { data: routeGeometry } = useQuery({
+    queryKey: ["route-geometry", activeRouteId],
+    queryFn: () => getRouteGeometry(activeRouteId!),
+    enabled: !!activeRouteId,
+    staleTime: 10 * 60 * 1000,
+  });
+
   if (!ready || isLoading) return <LoadingSkeleton />;
 
   if (error || !data) {
@@ -245,11 +254,10 @@ export default function DriverAdminPage() {
 
   const mapLines: MapLine[] = [];
   if (route) {
-    // prefer OSRM geometry from riskFactors, else straight line
-    const geo = route.riskFactors?.["geometry"] as [number, number][] | undefined;
-    const coords: [number, number][] = geo && geo.length > 1
-      ? geo
-      : [[route.startLon, route.startLat], [route.endLon, route.endLat]];
+    const coords: [number, number][] =
+      routeGeometry && routeGeometry.length > 1
+        ? routeGeometry
+        : [[route.startLon, route.startLat], [route.endLon, route.endLat]];
     mapLines.push({ id: "active-route", name: route.name, color: "#059669", coordinates: coords });
   }
 

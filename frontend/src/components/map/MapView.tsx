@@ -46,6 +46,14 @@ export type ZoneRing = {
   label?: string;
 };
 
+export type EventOverlay = {
+  id: string;
+  lat: number;
+  lon: number;
+  type: "weather" | "incident" | "news";
+  radiusKm: number;
+};
+
 export type MapSelection = {
   source: "map" | "object" | "point";
   longitude: number;
@@ -65,6 +73,7 @@ type MapViewProps = {
   heatmapCells?: HeatmapCell[] | null;
   weatherHeatmapCells?: WeatherHeatmapCell[] | null;
   zoneRings?: ZoneRing[];
+  eventOverlays?: EventOverlay[];
   precipitationOverlay?: boolean;
   center?: [number, number];
   className?: string;
@@ -110,13 +119,43 @@ type FallbackRuntime = {
   hasCluster: boolean;
   hasRainViewer: boolean;
   hasZones: boolean;
+  hasDriverLayer: boolean;
+  driverPopup: maplibregl.Popup | null;
 };
 
 type Runtime = DgisRuntime | FallbackRuntime;
 
 const DGIS_KEY = process.env.NEXT_PUBLIC_2GIS_KEY?.trim();
 
-const FALLBACK_STYLE = "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json";
+// Несколько источников тайлов — пробуем по порядку
+const TILE_SOURCES = [
+  "https://a.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png",
+  "https://b.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png",
+  "https://c.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png",
+  "https://d.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png",
+];
+
+function makeFallbackStyle(tiles: string[]): maplibregl.StyleSpecification {
+  return {
+    version: 8 as const,
+    glyphs: "https://fonts.openmaptiles.org/{fontstack}/{range}.pbf",
+    sources: {
+      osm: {
+        type: "raster" as const,
+        tiles,
+        tileSize: 256,
+        attribution: "© OpenStreetMap contributors",
+        maxzoom: 19,
+      },
+    },
+    layers: [
+      { id: "bg",  type: "background" as const, paint: { "background-color": "#e8e0d8" } },
+      { id: "osm", type: "raster"     as const, source: "osm" },
+    ],
+  };
+}
+
+const FALLBACK_STYLE = makeFallbackStyle(TILE_SOURCES);
 
 export default function MapView({
   lines = [],
@@ -124,9 +163,10 @@ export default function MapView({
   heatmapCells = null,
   weatherHeatmapCells = null,
   zoneRings = [],
+  eventOverlays = [],
   precipitationOverlay = false,
   center,
-  className = "h-[420px] w-full rounded-[28px]",
+  className = "h-[420px] w-full",
   containerClassName,
   selectable = false,
   selectedCoordinates = null,
@@ -415,6 +455,7 @@ export default function MapView({
         activePoints,
         highlightedPointIds,
         selectableRef.current,
+        selectableRef,
         onSelectRef,
         onPointClickRef,
       ),
@@ -458,6 +499,12 @@ export default function MapView({
     if (!runtime || !ready || runtime.kind !== "fallback") return;
     return scheduleFallbackSync(runtime, () => syncZoneRings(runtime, zoneRings));
   }, [zoneRings, ready]);
+
+  useEffect(() => {
+    const runtime = runtimeRef.current;
+    if (!runtime || !ready || runtime.kind !== "fallback") return;
+    return scheduleFallbackSync(runtime, () => syncEventOverlays(runtime, eventOverlays));
+  }, [eventOverlays, ready]);
 
   useEffect(() => {
     const runtime = runtimeRef.current;
@@ -529,10 +576,16 @@ export default function MapView({
 
   return (
     <div
-      className={`relative overflow-hidden rounded-[28px] border border-sand/80${containerClassName ? ` ${containerClassName}` : ""}`}
-      style={{ isolation: "isolate" }}
+      className={`relative${containerClassName ? ` ${containerClassName}` : ""}`}
     >
-      <div ref={hostRef} className={className} />
+      {/* border-radius + overflow:hidden applied directly on the MapLibre
+          container so markers are clipped in the same compositing layer
+          as the canvas — prevents drift during page scroll */}
+      <div
+        ref={hostRef}
+        className={className}
+        style={{ borderRadius: "28px", border: "1px solid rgba(212,206,198,0.8)", background: "#e8e0d8" }}
+      />
 
       <div className="pointer-events-none absolute bottom-4 right-4 z-20 flex flex-col gap-2">
         <ControlButton label="Увеличить" onClick={handleZoomIn}>
@@ -644,21 +697,20 @@ function initFallbackMap(
 
   map.on("load", markReady);
   map.on("styledata", () => {
-    // Catch late-firing styledata events (e.g. on style reload) and mark ready
     if (!runtimeRef.current) return;
     if (!map.isStyleLoaded()) return;
     setReady(true);
   });
   map.on("error", (e) => {
     console.warn("[MapView] MapLibre error:", e?.error?.message ?? e);
-    // If the style failed to load, forcibly mark ready so the map container
-    // is at least usable (tiles may be missing but interactions still work).
     if (!map.isStyleLoaded()) {
-      setTimeout(() => {
-        if (runtimeRef.current) setReady(true);
-      }, 500);
+      setTimeout(() => { if (runtimeRef.current) setReady(true); }, 500);
     }
   });
+
+  // Если за 5 секунд карта не стала ready — всё равно помечаем её готовой
+  // (тайлы могут прийти позже, но маркеры/линии нужно рендерить уже)
+  setTimeout(() => { if (runtimeRef.current) setReady(true); }, 5000);
 
   map.on("click", (event) => {
     const features = map.queryRenderedFeatures(event.point) ?? [];
@@ -701,6 +753,8 @@ function initFallbackMap(
     hasCluster: false,
     hasRainViewer: false,
     hasZones: false,
+    hasDriverLayer: false,
+    driverPopup: null,
   };
   runtimeRef.current = runtime;
 
@@ -709,8 +763,9 @@ function initFallbackMap(
     if (!rt || rt.kind !== "fallback") return;
     updateDriverVisibility(rt);
   };
+  map.on("zoom",    onZoomOrMove);
   map.on("zoomend", onZoomOrMove);
-  map.on("zoom", onZoomOrMove);
+  map.on("moveend", onZoomOrMove);
 }
 
 function syncDgisLines(runtime: DgisRuntime, lines: MapLine[]) {
@@ -891,10 +946,16 @@ function syncFallbackMarkers(
   points: MapPoint[],
   highlightedPointIds: string[],
   selectable: boolean,
+  selectableRef: MutableRefObject<boolean>,
   onSelectRef: MutableRefObject<MapViewProps["onSelect"]>,
   onPointClickRef: MutableRefObject<MapViewProps["onPointClick"]>,
 ) {
-  const nextIds = new Set(points.map((point) => point.id));
+  // Driver/vehicle markers are rendered as a native GL circle layer so their
+  // positions are computed inside the WebGL pipeline — no drift during zoom.
+  const staticPoints = points.filter((p) => p.kind !== "driver" && p.kind !== "vehicle");
+  const driverPoints = points.filter((p) => p.kind === "driver" || p.kind === "vehicle");
+
+  const nextIds = new Set(staticPoints.map((point) => point.id));
 
   runtime.markers.forEach((record, id) => {
     if (!nextIds.has(id)) {
@@ -904,7 +965,7 @@ function syncFallbackMarkers(
     }
   });
 
-  points.forEach((point) => {
+  staticPoints.forEach((point) => {
     const highlighted = highlightedPointIds.includes(point.id);
     const existing = runtime.markers.get(point.id);
 
@@ -963,31 +1024,95 @@ function syncFallbackMarkers(
     });
   });
 
-  syncFallbackCluster(runtime, points);
-  updateDriverVisibility(runtime);
+  syncDriverGLLayer(runtime, driverPoints, highlightedPointIds, selectableRef, onSelectRef, onPointClickRef);
 }
 
-function syncFallbackCluster(runtime: FallbackRuntime, points: MapPoint[]) {
+/** Draws person / truck icons onto canvas and registers them in the map sprite. */
+function addDriverMapImages(map: MapLibreMap) {
+  const SIZE = 24;
+
+  const makeIcon = (drawFn: (ctx: CanvasRenderingContext2D) => void): { width: number; height: number; data: Uint8Array } => {
+    const c = document.createElement("canvas");
+    c.width = SIZE;
+    c.height = SIZE;
+    const ctx = c.getContext("2d")!;
+    ctx.strokeStyle = "#ffffff";
+    ctx.fillStyle = "#ffffff";
+    ctx.lineWidth = 2.2;
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    drawFn(ctx);
+    return { width: SIZE, height: SIZE, data: new Uint8Array(ctx.getImageData(0, 0, SIZE, SIZE).data.buffer) };
+  };
+
+  if (!map.hasImage(DRIVER_ICON_ID)) {
+    map.addImage(DRIVER_ICON_ID, makeIcon((ctx) => {
+      // Head circle
+      ctx.beginPath();
+      ctx.arc(12, 8, 4, 0, Math.PI * 2);
+      ctx.fill();
+      // Body — same path as Lucide User icon
+      ctx.stroke(new Path2D("M6 20v-2a6 6 0 0 1 12 0v2"));
+    }));
+  }
+
+  if (!map.hasImage(VEHICLE_ICON_ID)) {
+    map.addImage(VEHICLE_ICON_ID, makeIcon((ctx) => {
+      // Cab body
+      ctx.strokeRect(1, 3, 15, 13);
+      // Cargo section
+      ctx.stroke(new Path2D("M16 8h4l3 5v3h-7V8z"));
+      // Wheels
+      ctx.beginPath();
+      ctx.arc(5.5, 18.5, 2.5, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.arc(18.5, 18.5, 2.5, 0, Math.PI * 2);
+      ctx.stroke();
+    }));
+  }
+}
+
+/**
+ * Renders driver/vehicle markers as native MapLibre GL circle layers.
+ * Unlike HTML markers, GL layers are rendered inside the WebGL pipeline
+ * so they never drift or lag behind the canvas during zoom animations.
+ */
+function syncDriverGLLayer(
+  runtime: FallbackRuntime,
+  driverPoints: MapPoint[],
+  highlightedIds: string[],
+  selectableRef: MutableRefObject<boolean>,
+  onSelectRef: MutableRefObject<MapViewProps["onSelect"]>,
+  onPointClickRef: MutableRefObject<MapViewProps["onPointClick"]>,
+) {
   const map = runtime.map;
 
-  // Only cluster driver/vehicle points
-  const movingPoints = points.filter(
-    (p) => p.kind === "driver" || p.kind === "vehicle",
-  );
-
-  const features = movingPoints.map((p) => ({
+  const features = driverPoints.map((p) => ({
     type: "Feature" as const,
     geometry: { type: "Point" as const, coordinates: [p.longitude, p.latitude] },
-    properties: { id: p.id, kind: p.kind },
+    properties: {
+      id: p.id,
+      entityId: p.entityId ?? null,
+      kind: p.kind,
+      title: p.title,
+      subtitle: p.subtitle ?? null,
+      longitude: p.longitude,
+      latitude: p.latitude,
+      speed: p.speed ?? null,
+      highlighted: highlightedIds.includes(p.id) ? 1 : 0,
+    },
   }));
   const geojson = { type: "FeatureCollection" as const, features };
 
-  const src = map.getSource(CLUSTER_SOURCE) as maplibregl.GeoJSONSource | undefined;
-  if (src?.setData) {
-    src.setData(geojson as any);
+  // If source already exists, just update its data — layers are already in place.
+  const existingSrc = map.getSource(CLUSTER_SOURCE) as maplibregl.GeoJSONSource | undefined;
+  if (existingSrc?.setData) {
+    existingSrc.setData(geojson as any);
     return;
   }
 
+  // First-time setup: GeoJSON source + cluster + individual driver circles.
   try {
     map.addSource(CLUSTER_SOURCE, {
       type: "geojson",
@@ -997,7 +1122,7 @@ function syncFallbackCluster(runtime: FallbackRuntime, points: MapPoint[]) {
       clusterRadius: 55,
     });
 
-    // Cluster circle — emerald colour matching driver markers
+    // Cluster circle — shown for grouped points at low zoom.
     map.addLayer({
       id: CLUSTER_LAYER,
       type: "circle",
@@ -1025,34 +1150,122 @@ function syncFallbackCluster(runtime: FallbackRuntime, points: MapPoint[]) {
       paint: { "text-color": "#ffffff" },
     });
 
-    // Zoom into cluster on click
-    map.on("click", CLUSTER_LAYER, (e) => {
-      const features = map.queryRenderedFeatures(e.point, {
-        layers: [CLUSTER_LAYER],
-      });
-      if (!features.length) return;
-      const clusterId = features[0].properties?.cluster_id as number | undefined;
-      const coords = (features[0].geometry as GeoJSON.Point).coordinates as [
-        number,
-        number,
-      ];
-      if (clusterId == null) return;
-      void (
-        map.getSource(CLUSTER_SOURCE) as maplibregl.GeoJSONSource
-      ).getClusterExpansionZoom(clusterId).then((zoom) => {
-        if (zoom == null) return;
-        map.easeTo({ center: coords, zoom: zoom + 0.5, duration: 400 });
-      }).catch(() => { /* ok */ });
+    // Individual driver/vehicle circles — unclustered, geo-anchored via GL.
+    map.addLayer({
+      id: DRIVER_CIRCLE_LAYER,
+      type: "circle",
+      source: CLUSTER_SOURCE,
+      filter: ["!", ["has", "point_count"]],
+      paint: {
+        "circle-color": [
+          "case",
+          ["==", ["get", "kind"], "vehicle"], "#059669",
+          "#10b981",
+        ],
+        "circle-radius": 18,
+        "circle-stroke-width": ["case", ["!=", ["get", "highlighted"], 0], 5, 3],
+        "circle-stroke-color": "#ffffff",
+        "circle-opacity": 0.96,
+      },
     });
 
-    map.on("mouseenter", CLUSTER_LAYER, () => {
+    // Person / truck icon drawn on top of the circle background.
+    addDriverMapImages(map);
+    map.addLayer({
+      id: DRIVER_ICON_LAYER,
+      type: "symbol",
+      source: CLUSTER_SOURCE,
+      filter: ["!", ["has", "point_count"]],
+      layout: {
+        "icon-image": ["case", ["==", ["get", "kind"], "vehicle"], VEHICLE_ICON_ID, DRIVER_ICON_ID],
+        "icon-size": 0.82,
+        "icon-allow-overlap": true,
+        "icon-ignore-placement": true,
+      },
+    });
+
+    // Hover popup
+    const popup = new maplibregl.Popup({
+      closeButton: false,
+      closeOnClick: false,
+      anchor: "bottom",
+      offset: [0, -28],
+      maxWidth: "220px",
+    });
+    runtime.driverPopup = popup;
+
+    map.on("mousemove", DRIVER_CIRCLE_LAYER, (e) => {
+      if (!e.features?.length) return;
+      const props = e.features[0].properties ?? {};
+      const coords = (e.features[0].geometry as GeoJSON.Point).coordinates as [number, number];
+      popup
+        .setLngLat(coords)
+        .setHTML(buildPopupHtml({
+          id: String(props.id ?? ""),
+          kind: props.kind as MapPoint["kind"],
+          title: String(props.title ?? ""),
+          subtitle: props.subtitle ?? undefined,
+          longitude: Number(props.longitude ?? 0),
+          latitude: Number(props.latitude ?? 0),
+          speed: props.speed != null ? Number(props.speed) : null,
+        }))
+        .addTo(map);
       map.getCanvas().style.cursor = "pointer";
     });
-    map.on("mouseleave", CLUSTER_LAYER, () => {
+    map.on("mouseleave", DRIVER_CIRCLE_LAYER, () => {
+      popup.remove();
       map.getCanvas().style.cursor = "";
     });
 
+    // Click — use refs so handler always sees latest callbacks.
+    map.on("click", DRIVER_CIRCLE_LAYER, (e) => {
+      e.originalEvent?.stopPropagation();
+      if (!e.features?.length) return;
+      const props = e.features[0].properties ?? {};
+      const point: MapPoint = {
+        id: String(props.id ?? ""),
+        entityId: props.entityId != null ? Number(props.entityId) : undefined,
+        kind: props.kind as MapPoint["kind"],
+        title: String(props.title ?? ""),
+        subtitle: props.subtitle ?? undefined,
+        longitude: Number(props.longitude ?? 0),
+        latitude: Number(props.latitude ?? 0),
+        speed: props.speed != null ? Number(props.speed) : null,
+      };
+      onPointClickRef.current?.(point);
+      if (selectableRef.current) {
+        onSelectRef.current?.({
+          source: "point",
+          longitude: point.longitude,
+          latitude: point.latitude,
+          pointId: point.id,
+          pointTitle: point.title,
+          label: point.subtitle || point.title,
+        });
+      }
+    });
+
+    // Cluster: zoom in on click.
+    map.on("click", CLUSTER_LAYER, (e) => {
+      const features = map.queryRenderedFeatures(e.point, { layers: [CLUSTER_LAYER] });
+      if (!features.length) return;
+      const clusterId = features[0].properties?.cluster_id as number | undefined;
+      const coords = (features[0].geometry as GeoJSON.Point).coordinates as [number, number];
+      if (clusterId == null) return;
+      void (map.getSource(CLUSTER_SOURCE) as maplibregl.GeoJSONSource)
+        .getClusterExpansionZoom(clusterId)
+        .then((zoom) => {
+          if (zoom == null) return;
+          map.easeTo({ center: coords, zoom: zoom + 0.5, duration: 400 });
+        })
+        .catch(() => { /* ok */ });
+    });
+
+    map.on("mouseenter", CLUSTER_LAYER, () => { map.getCanvas().style.cursor = "pointer"; });
+    map.on("mouseleave", CLUSTER_LAYER, () => { map.getCanvas().style.cursor = ""; });
+
     runtime.hasCluster = true;
+    runtime.hasDriverLayer = true;
   } catch (e) {
     if (!isAlreadyExistsError(e)) throw e;
   }
@@ -1158,19 +1371,28 @@ function clearRuntimeObjects(runtime: Runtime) {
   runtime.lineIds.forEach((lineId) => removeRouteLine(runtime, lineId));
   cleanupOrphanRouteArtifacts(runtime, new Set());
 
-	  if (runtime.hasCluster) {
-	    [CLUSTER_COUNT_LAYER, CLUSTER_LAYER].forEach((id) => {
+	  if (runtime.hasCluster || runtime.hasDriverLayer) {
+	    runtime.driverPopup?.remove();
+	    runtime.driverPopup = null;
+	    [DRIVER_ICON_LAYER, DRIVER_CIRCLE_LAYER, CLUSTER_COUNT_LAYER, CLUSTER_LAYER].forEach((id) => {
 	      try { if (runtime.map.getLayer(id)) runtime.map.removeLayer(id); } catch { /* ok */ }
 	    });
 	    try { if (runtime.map.getSource(CLUSTER_SOURCE)) runtime.map.removeSource(CLUSTER_SOURCE); } catch { /* ok */ }
 	    runtime.hasCluster = false;
+	    runtime.hasDriverLayer = false;
 	  }
 
-  [WEATHER_CIRCLE_LAYER, WEATHER_HEATMAP_LAYER, ROUTE_LOAD_LAYER, ROUTE_LOAD_LAYER2,
-   RAINVIEWER_LAYER, ZONE_LINE_LAYER, ZONE_FILL_LAYER].forEach((id) => {
+  [
+    WEATHER_CIRCLE_LAYER, WEATHER_HEATMAP_LAYER, ROUTE_LOAD_LAYER, ROUTE_LOAD_LAYER2,
+    RAINVIEWER_LAYER, ZONE_LABEL_LAYER, ZONE_LINE_LAYER, ZONE_FILL_LAYER,
+    EVENT_OVERLAY_INNER + "-weather", EVENT_OVERLAY_OUTER + "-weather",
+    EVENT_OVERLAY_INNER + "-incident", EVENT_OVERLAY_OUTER + "-incident",
+    EVENT_OVERLAY_INNER + "-news",    EVENT_OVERLAY_OUTER + "-news",
+  ].forEach((id) => {
     try { if (runtime.map.getLayer(id)) runtime.map.removeLayer(id); } catch { /* ok */ }
   });
-  [WEATHER_HEATMAP_SOURCE, ROUTE_LOAD_SOURCE, RAINVIEWER_SOURCE, ZONE_SOURCE].forEach((id) => {
+  [WEATHER_HEATMAP_SOURCE, ROUTE_LOAD_SOURCE, RAINVIEWER_SOURCE, ZONE_SOURCE,
+   EVENT_OVERLAY_SOURCE].forEach((id) => {
     try { if (runtime.map.getSource(id)) runtime.map.removeSource(id); } catch { /* ok */ }
   });
 	
@@ -1259,10 +1481,26 @@ function removeRouteLine(runtime: FallbackRuntime, lineId: string) {
   }
 }
 
-const CLUSTER_MAX_ZOOM     = 10;
-const CLUSTER_SOURCE       = "velto-cluster-source";
-const CLUSTER_LAYER        = "velto-cluster-circles";
-const CLUSTER_COUNT_LAYER  = "velto-cluster-counts";
+const CLUSTER_MAX_ZOOM      = 10;
+const CLUSTER_SOURCE        = "velto-cluster-source";
+const CLUSTER_LAYER         = "velto-cluster-circles";
+const CLUSTER_COUNT_LAYER   = "velto-cluster-counts";
+// GL layer for individual (unclustered) driver/vehicle markers — rendered inside
+// the WebGL pipeline so positions are always perfectly geo-anchored during zoom.
+const DRIVER_CIRCLE_LAYER   = "velto-driver-circles";
+const DRIVER_ICON_LAYER     = "velto-driver-icons";
+const DRIVER_ICON_ID        = "velto-driver-icon";
+const VEHICLE_ICON_ID       = "velto-vehicle-icon";
+
+const EVENT_OVERLAY_SOURCE  = "velto-event-overlay-source";
+const EVENT_OVERLAY_OUTER   = "velto-event-overlay-outer";
+const EVENT_OVERLAY_INNER   = "velto-event-overlay-inner";
+
+const EVENT_COLORS: Record<EventOverlay["type"], string> = {
+  weather:  "#3b82f6",
+  incident: "#ef4444",
+  news:     "#94a3b8",
+};
 
 const ROUTE_LOAD_SOURCE = "velto-route-load-source";
 const ROUTE_LOAD_LAYER  = "velto-route-load-layer";
@@ -1275,20 +1513,13 @@ const RAINVIEWER_LAYER  = "velto-rainviewer-layer";
 const ZONE_SOURCE       = "velto-zone-source";
 const ZONE_FILL_LAYER   = "velto-zone-fill";
 const ZONE_LINE_LAYER   = "velto-zone-line";
+const ZONE_LABEL_LAYER  = "velto-zone-label";
 
-/** Hide/show individual driver HTML markers depending on zoom (cluster takes over at low zoom). */
-function updateDriverVisibility(runtime: FallbackRuntime) {
-  const zoom = runtime.map.getZoom();
-  if (!Number.isFinite(zoom)) return;
-  const show = zoom >= CLUSTER_MAX_ZOOM;
-  runtime.markers.forEach((record) => {
-    if (record.kind === "driver" || record.kind === "vehicle") {
-      // Use the MapLibre wrapper element (.maplibregl-marker) so the whole marker
-      // including pulse rings is hidden — avoids click-through ghosts.
-      const wrapper = record.element.parentElement ?? record.element;
-      wrapper.style.display = show ? "" : "none";
-    }
-  });
+/** Driver markers are always visible — clusters render as GL layer on top at low zoom. */
+function updateDriverVisibility(_runtime: FallbackRuntime) {
+  // No-op: individual HTML markers stay visible at all zoom levels.
+  // The MapLibre GL cluster circles (syncFallbackCluster) provide count badges
+  // at low zoom and automatically disappear at clusterMaxZoom.
 }
 
 /** Add/remove RainViewer precipitation radar tile overlay. */
@@ -1341,12 +1572,14 @@ async function syncRainViewer(runtime: FallbackRuntime, show: boolean) {
       attribution: "© RainViewer",
     });
 
+    // Insert rain radar below driver markers so it doesn't obscure them
+    const beforeId = map.getLayer(CLUSTER_LAYER) ? CLUSTER_LAYER : undefined;
     map.addLayer({
       id: RAINVIEWER_LAYER,
       type: "raster",
       source: RAINVIEWER_SOURCE,
-      paint: { "raster-opacity": 0.75 },
-    });
+      paint: { "raster-opacity": 0.65 },
+    }, beforeId);
 
     runtime.hasRainViewer = true;
   } catch (e) {
@@ -1372,6 +1605,7 @@ function syncZoneRings(runtime: FallbackRuntime, zones: ZoneRing[]) {
   const map = runtime.map;
 
   const cleanup = () => {
+    try { if (map.getLayer(ZONE_LABEL_LAYER)) map.removeLayer(ZONE_LABEL_LAYER); } catch { /* ok */ }
     try { if (map.getLayer(ZONE_LINE_LAYER)) map.removeLayer(ZONE_LINE_LAYER); } catch { /* ok */ }
     try { if (map.getLayer(ZONE_FILL_LAYER)) map.removeLayer(ZONE_FILL_LAYER); } catch { /* ok */ }
     try { if (map.getSource(ZONE_SOURCE)) map.removeSource(ZONE_SOURCE); } catch { /* ok */ }
@@ -1380,16 +1614,27 @@ function syncZoneRings(runtime: FallbackRuntime, zones: ZoneRing[]) {
 
   if (!zones.length) { cleanup(); return; }
 
-  const features = zones.map((z) => ({
+  // Polygon features for fill + border
+  const polyFeatures = zones.map((z) => ({
     type: "Feature" as const,
-    properties: { color: z.color, id: z.id },
+    properties: { color: z.color, id: z.id, label: z.label ?? "" },
     geometry: {
       type: "Polygon" as const,
       coordinates: [circleCoords(z.lat, z.lon, z.radiusKm)],
     },
   }));
 
-  const geojson = { type: "FeatureCollection" as const, features };
+  // Point features for zone-center labels (separate geometry so text anchors at center)
+  const labelFeatures = zones.map((z) => ({
+    type: "Feature" as const,
+    properties: { color: z.color, id: z.id, label: z.label ?? "" },
+    geometry: { type: "Point" as const, coordinates: [z.lon, z.lat] },
+  }));
+
+  const geojson = {
+    type: "FeatureCollection" as const,
+    features: [...polyFeatures, ...labelFeatures],
+  };
 
   const existing = map.getSource(ZONE_SOURCE) as maplibregl.GeoJSONSource | undefined;
   if (existing?.setData) {
@@ -1402,29 +1647,135 @@ function syncZoneRings(runtime: FallbackRuntime, zones: ZoneRing[]) {
   try {
     map.addSource(ZONE_SOURCE, { type: "geojson", data: geojson as any });
 
+    // Insert zone layers below driver markers so drivers stay on top
+    const belowDrivers = map.getLayer(CLUSTER_LAYER) ? CLUSTER_LAYER : undefined;
+
     map.addLayer({
       id: ZONE_FILL_LAYER,
       type: "fill",
       source: ZONE_SOURCE,
+      filter: ["==", ["geometry-type"], "Polygon"],
       paint: {
         "fill-color": ["get", "color"],
-        "fill-opacity": 0.07,
+        "fill-opacity": 0.13,
       },
-    });
+    }, belowDrivers);
 
     map.addLayer({
       id: ZONE_LINE_LAYER,
       type: "line",
       source: ZONE_SOURCE,
+      filter: ["==", ["geometry-type"], "Polygon"],
       paint: {
         "line-color": ["get", "color"],
-        "line-width": 2,
-        "line-opacity": 0.5,
-        "line-dasharray": [4, 3],
+        "line-width": 2.5,
+        "line-opacity": 0.8,
+        "line-dasharray": [5, 3],
       },
-    });
+    }, belowDrivers);
+
+    map.addLayer({
+      id: ZONE_LABEL_LAYER,
+      type: "symbol",
+      source: ZONE_SOURCE,
+      filter: ["==", ["geometry-type"], "Point"],
+      layout: {
+        "text-field": ["get", "label"],
+        "text-size": 11,
+        "text-font": ["Open Sans Bold", "Arial Unicode MS Bold"],
+        "text-anchor": "center",
+        "text-allow-overlap": false,
+        "text-ignore-placement": false,
+      },
+      paint: {
+        "text-color": ["get", "color"],
+        "text-halo-color": "#ffffff",
+        "text-halo-width": 1.5,
+        "text-opacity": 0.85,
+      },
+    }, belowDrivers);
 
     runtime.hasZones = true;
+  } catch { /* already added */ }
+}
+
+function syncEventOverlays(runtime: FallbackRuntime, overlays: EventOverlay[]) {
+  const map = runtime.map;
+
+  const allLayerIds = [
+    EVENT_OVERLAY_OUTER + "-weather", EVENT_OVERLAY_INNER + "-weather",
+    EVENT_OVERLAY_OUTER + "-incident", EVENT_OVERLAY_INNER + "-incident",
+    EVENT_OVERLAY_OUTER + "-news",    EVENT_OVERLAY_INNER + "-news",
+  ];
+
+  const cleanup = () => {
+    allLayerIds.forEach((id) => {
+      try { if (map.getLayer(id)) map.removeLayer(id); } catch { /* ok */ }
+    });
+    try { if (map.getSource(EVENT_OVERLAY_SOURCE)) map.removeSource(EVENT_OVERLAY_SOURCE); } catch { /* ok */ }
+  };
+
+  if (!overlays.length) { cleanup(); return; }
+
+  const features = overlays.map((o) => ({
+    type: "Feature" as const,
+    geometry: { type: "Point" as const, coordinates: [o.lon, o.lat] },
+    properties: { color: EVENT_COLORS[o.type], type: o.type },
+  }));
+
+  const geojson = { type: "FeatureCollection" as const, features };
+  const existing = map.getSource(EVENT_OVERLAY_SOURCE) as maplibregl.GeoJSONSource | undefined;
+  if (existing?.setData) { existing.setData(geojson as any); return; }
+
+  cleanup();
+
+  // Радиусы по типу (в пикселях на каждом уровне зума)
+  const radii: Record<string, [number, number, number, number]> = {
+    //                    zoom3  zoom5  zoom7  zoom9
+    weather:  [18, 35, 70, 140],
+    incident: [ 6, 12, 24,  50],
+    news:     [10, 20, 40,  80],
+  };
+
+  try {
+    map.addSource(EVENT_OVERLAY_SOURCE, { type: "geojson", data: geojson as any });
+
+    (["weather", "incident", "news"] as const).forEach((t) => {
+      const [r3, r5, r7, r9] = radii[t];
+      const color = EVENT_COLORS[t];
+      const filter: any = ["==", ["get", "type"], t];
+      const outerRadius = ["interpolate", ["linear"], ["zoom"], 3, r3, 5, r5, 7, r7, 9, r9] as any;
+      const innerRadius = ["interpolate", ["linear"], ["zoom"], 3, r3 * 0.5, 5, r5 * 0.5, 7, r7 * 0.5, 9, r9 * 0.5] as any;
+
+      map.addLayer({
+        id: EVENT_OVERLAY_OUTER + "-" + t,
+        type: "circle",
+        source: EVENT_OVERLAY_SOURCE,
+        filter,
+        paint: {
+          "circle-color": color,
+          "circle-radius": outerRadius,
+          "circle-opacity": 0.18,
+          "circle-blur": 0.9,
+        },
+      });
+
+      map.addLayer({
+        id: EVENT_OVERLAY_INNER + "-" + t,
+        type: "circle",
+        source: EVENT_OVERLAY_SOURCE,
+        filter,
+        paint: {
+          "circle-color": color,
+          "circle-radius": innerRadius,
+          "circle-opacity": 0.42,
+          "circle-blur": 1.3,
+          "circle-stroke-width": 1,
+          "circle-stroke-color": color,
+          "circle-stroke-opacity": 0.20,
+        },
+      });
+    });
   } catch { /* already added */ }
 }
 
@@ -1452,17 +1803,70 @@ function syncFallbackHeatmap(runtime: FallbackRuntime, cells: HeatmapCell[] | nu
 
   if (!cells || cells.length === 0) { cleanup(); return; }
 
-  // Group points by highway, build LineString segments coloured by intensity
+  // If cells have highway identifiers, render as coloured road segments.
+  // Otherwise (e.g. bottleneck GPS points) render as individual coloured circles.
+  const pointMode = cells.every((c) => c.highway == null);
+
+  if (pointMode) {
+    const geojson = {
+      type: "FeatureCollection",
+      features: cells.map((c) => ({
+        type: "Feature",
+        geometry: { type: "Point", coordinates: [c.lon, c.lat] },
+        properties: {
+          intensity: c.intensity,
+          color: intensityToColor(c.intensity),
+          avg_speed: c.avg_speed_kmh ?? (c as any).avgSpeedKmh ?? 70,
+        },
+      })),
+    };
+
+    cleanup();
+
+    try {
+      map.addSource(ROUTE_LOAD_SOURCE, { type: "geojson", data: geojson as any });
+
+      // Soft glow halo
+      map.addLayer({
+        id: ROUTE_LOAD_LAYER2,
+        type: "circle",
+        source: ROUTE_LOAD_SOURCE,
+        paint: {
+          "circle-color": ["get", "color"],
+          "circle-radius": ["interpolate", ["linear"], ["zoom"], 4, 7, 8, 13, 12, 20],
+          "circle-blur": 0.7,
+          "circle-opacity": 0.3,
+        },
+      });
+
+      // Solid dot
+      map.addLayer({
+        id: ROUTE_LOAD_LAYER,
+        type: "circle",
+        source: ROUTE_LOAD_SOURCE,
+        paint: {
+          "circle-color": ["get", "color"],
+          "circle-radius": ["interpolate", ["linear"], ["zoom"], 4, 3, 8, 6, 12, 10],
+          "circle-opacity": 0.88,
+          "circle-stroke-width": 1.5,
+          "circle-stroke-color": "#ffffff",
+          "circle-stroke-opacity": 0.7,
+        },
+      });
+    } catch { /* already added */ }
+    return;
+  }
+
+  // Highway line-segment mode
   const byHighway = new Map<string, HeatmapCell[]>();
   for (const c of cells) {
-    const key = c.highway ?? "unknown";
+    const key = c.highway!;
     if (!byHighway.has(key)) byHighway.set(key, []);
     byHighway.get(key)!.push(c);
   }
 
   const features: any[] = [];
   for (const [highway, pts] of byHighway) {
-    // Draw segment-by-segment so each piece gets its own color
     for (let i = 0; i < pts.length - 1; i++) {
       const a = pts[i];
       const b = pts[i + 1];
@@ -1491,7 +1895,6 @@ function syncFallbackHeatmap(runtime: FallbackRuntime, cells: HeatmapCell[] | nu
   try {
     map.addSource(ROUTE_LOAD_SOURCE, { type: "geojson", data: geojson as any });
 
-    // Outline (wider, darker)
     map.addLayer({
       id: ROUTE_LOAD_LAYER2,
       type: "line",
@@ -1504,7 +1907,6 @@ function syncFallbackHeatmap(runtime: FallbackRuntime, cells: HeatmapCell[] | nu
       },
     });
 
-    // Main line
     map.addLayer({
       id: ROUTE_LOAD_LAYER,
       type: "line",
@@ -1685,6 +2087,10 @@ function hydrateMarkerElement(
       highlighted ? "ring-4 ring-white/80 ring-offset-2 ring-offset-emerald-500" : "",
     ].filter(Boolean).join(" ");
     marker.style.overflow = "visible";
+    // Promoting the marker to its own GPU compositing layer keeps it in sync
+    // with MapLibre's canvas transform during zoom/pan animations,
+    // preventing the icon from visually drifting off its geo position.
+    marker.style.willChange = "transform";
     marker.setAttribute("aria-label", [
       point.title,
       point.subtitle,

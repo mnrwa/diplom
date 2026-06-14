@@ -477,6 +477,36 @@ export class RoutesService {
     return this.prisma.route.delete({ where: { id } });
   }
 
+  async getGeometry(id: number): Promise<[number, number][]> {
+    const route = await this.prisma.route.findUnique({
+      where: { id },
+      include: { startPoint: true, endPoint: true },
+    });
+    if (!route) throw new NotFoundException('Маршрут не найден');
+
+    const stored = (route.riskFactors as any)?.routing?.geometry;
+    if (Array.isArray(stored) && stored.length > 1) {
+      return stored
+        .filter((p: any) => p?.lon != null && p?.lat != null)
+        .map((p: any) => [p.lon, p.lat] as [number, number]);
+    }
+
+    const startLon = (route.startPoint as any)?.lon ?? (route as any).startLon;
+    const startLat = (route.startPoint as any)?.lat ?? (route as any).startLat;
+    const endLon   = (route.endPoint   as any)?.lon ?? (route as any).endLon;
+    const endLat   = (route.endPoint   as any)?.lat ?? (route as any).endLat;
+    if (!startLon || !startLat || !endLon || !endLat) return [];
+
+    try {
+      const url = `${this.osrmUrl}/route/v1/driving/${startLon},${startLat};${endLon},${endLat}?geometries=geojson&overview=full`;
+      const res = await firstValueFrom(this.http.get<any>(url, { timeout: 8000 } as any));
+      const coords: [number, number][] | undefined = res.data?.routes?.[0]?.geometry?.coordinates;
+      return Array.isArray(coords) && coords.length > 1 ? coords : [];
+    } catch {
+      return [];
+    }
+  }
+
   private async calcFuelCost(vehicleId: number | undefined, distanceKm: number | undefined): Promise<number | null> {
     if (!vehicleId || !distanceKm) return null;
     try {

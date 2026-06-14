@@ -9,6 +9,12 @@ export class TelegramService implements OnModuleInit {
   private readonly apiBase: string;
   private enabled = false;
 
+  // Circuit-breaker: pause after 3 consecutive network failures for 5 minutes
+  private consecutiveFailures = 0;
+  private pausedUntil: number | null = null;
+  private readonly FAILURE_THRESHOLD = 3;
+  private readonly PAUSE_MS = 5 * 60 * 1000;
+
   constructor(private http: HttpService) {
     this.apiBase = `https://api.telegram.org/bot${this.token}`;
   }
@@ -24,13 +30,38 @@ export class TelegramService implements OnModuleInit {
 
   async sendMessage(chatId: string, text: string): Promise<boolean> {
     if (!this.enabled || !chatId) return false;
+
+    // Circuit breaker: skip if in back-off window
+    if (this.pausedUntil !== null) {
+      if (Date.now() < this.pausedUntil) return false;
+      this.pausedUntil = null;
+      this.consecutiveFailures = 0;
+    }
+
     try {
       await firstValueFrom(
-        this.http.post(`${this.apiBase}/sendMessage`, { chat_id: chatId, text, parse_mode: 'HTML' }, { timeout: 5000 }),
+        this.http.post(`${this.apiBase}/sendMessage`, { chat_id: chatId, text, parse_mode: 'HTML' }, { timeout: 8000 }),
       );
+      this.consecutiveFailures = 0;
       return true;
-    } catch (error) {
-      this.logger.error(`Ошибка отправки Telegram [${chatId}]: ${error}`);
+    } catch (error: any) {
+      const isNetworkError = error?.code === 'ECONNABORTED' || error?.code === 'ECONNREFUSED'
+        || error?.message?.includes('timeout') || error?.message?.includes('ENOTFOUND');
+
+      this.consecutiveFailures++;
+
+      if (isNetworkError) {
+        if (this.consecutiveFailures >= this.FAILURE_THRESHOLD) {
+          this.pausedUntil = Date.now() + this.PAUSE_MS;
+          this.logger.warn(
+            `Telegram API недоступен (${this.consecutiveFailures} ошибок подряд) — пауза на 5 мин`,
+          );
+        } else {
+          this.logger.warn(`Telegram недоступен [${chatId}]: ${error?.message}`);
+        }
+      } else {
+        this.logger.error(`Ошибка отправки Telegram [${chatId}]: ${error}`);
+      }
       return false;
     }
   }

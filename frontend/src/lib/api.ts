@@ -356,6 +356,9 @@ export const getRoutes = () =>
 export const getRoute = (id: number) =>
   api.get<RouteSummary>(`/routes/${id}`).then((r) => r.data);
 
+export const getRouteGeometry = (id: number) =>
+  api.get<[number, number][]>(`/routes/${id}/geometry`).then((r) => r.data);
+
 export type PublicTrackRouteResponse = {
   id: number;
   name: string;

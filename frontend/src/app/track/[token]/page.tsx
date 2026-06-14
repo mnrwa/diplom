@@ -80,6 +80,7 @@ export default function TrackPage() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [copied, setCopied] = useState(false);
+  const [liveRouteCoords, setLiveRouteCoords] = useState<[number, number][] | null>(null);
   const { positions: wsPositions } = useWebSocket();
 
   useEffect(() => {
@@ -97,6 +98,30 @@ export default function TrackPage() {
     const interval = setInterval(load, 15_000);
     return () => clearInterval(interval);
   }, [params?.token]);
+
+  // Fetch OSRM road geometry when DB geometry is missing
+  useEffect(() => {
+    if (!data) return;
+    const hasDbGeom = Array.isArray((data.riskFactors as any)?.routing?.geometry);
+    if (hasDbGeom) { setLiveRouteCoords(null); return; }
+    const startLon = data.startPoint?.lon;
+    const startLat = data.startPoint?.lat;
+    const endLon   = data.endPoint?.lon;
+    const endLat   = data.endPoint?.lat;
+    if (startLon == null || startLat == null || endLon == null || endLat == null) return;
+    let cancelled = false;
+    fetch(
+      `https://router.project-osrm.org/route/v1/driving/${startLon},${startLat};${endLon},${endLat}?geometries=geojson&overview=full`,
+    )
+      .then((r) => r.json())
+      .then((d) => {
+        if (cancelled) return;
+        const coords = d?.routes?.[0]?.geometry?.coordinates as [number, number][] | undefined;
+        if (coords?.length) setLiveRouteCoords(coords);
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [data?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (loading) {
     return (
@@ -135,10 +160,10 @@ export default function TrackPage() {
 
   const routeCoords: [number, number][] = osrmGeom
     ? osrmGeom.filter((p: any) => p?.lon != null).map((p: any) => [p.lon, p.lat] as [number, number])
-    : ([
+    : (liveRouteCoords ?? ([
         data.startPoint ? [data.startPoint.lon, data.startPoint.lat] : null,
         data.endPoint ? [data.endPoint.lon, data.endPoint.lat] : null,
-      ].filter(Boolean) as [number, number][]);
+      ].filter(Boolean) as [number, number][]));
 
   const mapPoints = [
     ...(data.startPoint

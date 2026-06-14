@@ -60,7 +60,7 @@ import {
 } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { DriverSelector } from "@/components/maps/DriverSelector";
-import MapView, { type ZoneRing } from "@/components/map/MapView";
+import MapView, { type ZoneRing, type EventOverlay } from "@/components/map/MapView";
 import { AutoAssignButton } from "@/components/dashboard/AutoAssignModal";
 import { MaintenancePanel } from "@/components/dashboard/MaintenancePanel";
 import { useWebSocket } from "@/hooks/useWebSocket";
@@ -96,6 +96,7 @@ import {
   type ConsolidationCandidate,
 	  type DriverZone,
 	  type BottleneckCell,
+	  type HeatmapCell,
 	  type WeatherHeatmapResult,
 	} from "@/lib/api";
 import { clearSession, getStoredUser } from "@/lib/session";
@@ -103,6 +104,85 @@ import { clearSession, getStoredUser } from "@/lib/session";
 const ZONE_COLORS = [
   "#10b981", "#3b82f6", "#f59e0b", "#8b5cf6", "#ef4444",
   "#06b6d4", "#84cc16", "#f97316", "#ec4899", "#14b8a6",
+];
+
+// Mock event overlays for presentation — weather (blue), incidents (red), news (gray)
+const MOCK_EVENT_OVERLAYS: EventOverlay[] = [
+  // Weather — синие
+  { id: "w-1",  lat: 55.75,  lon: 37.60,  type: "weather",  radiusKm: 45 },
+  { id: "w-2",  lat: 59.95,  lon: 30.32,  type: "weather",  radiusKm: 38 },
+  { id: "w-3",  lat: 55.79,  lon: 49.13,  type: "weather",  radiusKm: 30 },
+  { id: "w-4",  lat: 56.84,  lon: 60.60,  type: "weather",  radiusKm: 35 },
+  { id: "w-5",  lat: 54.98,  lon: 82.90,  type: "weather",  radiusKm: 40 },
+  { id: "w-6",  lat: 54.98,  lon: 73.37,  type: "weather",  radiusKm: 25 },
+  { id: "w-7",  lat: 55.15,  lon: 61.44,  type: "weather",  radiusKm: 22 },
+  { id: "w-8",  lat: 53.20,  lon: 50.18,  type: "weather",  radiusKm: 28 },
+  { id: "w-9",  lat: 54.74,  lon: 55.97,  type: "weather",  radiusKm: 22 },
+  { id: "w-10", lat: 58.01,  lon: 56.25,  type: "weather",  radiusKm: 20 },
+  { id: "w-11", lat: 47.22,  lon: 39.72,  type: "weather",  radiusKm: 35 },
+  { id: "w-12", lat: 56.01,  lon: 92.87,  type: "weather",  radiusKm: 30 },
+  { id: "w-13", lat: 48.71,  lon: 44.50,  type: "weather",  radiusKm: 28 },
+  { id: "w-14", lat: 51.67,  lon: 39.19,  type: "weather",  radiusKm: 22 },
+  { id: "w-15", lat: 45.03,  lon: 38.99,  type: "weather",  radiusKm: 30 },
+  { id: "w-16", lat: 52.29,  lon: 104.28, type: "weather",  radiusKm: 25 },
+  { id: "w-17", lat: 57.15,  lon: 68.98,  type: "weather",  radiusKm: 22 },
+  { id: "w-18", lat: 61.25,  lon: 73.43,  type: "weather",  radiusKm: 20 },
+  { id: "w-19", lat: 64.54,  lon: 40.54,  type: "weather",  radiusKm: 18 },
+  { id: "w-20", lat: 51.54,  lon: 46.03,  type: "weather",  radiusKm: 20 },
+  // Incidents — красные
+  { id: "i-1",  lat: 55.40,  lon: 36.50,  type: "incident", radiusKm: 6  },
+  { id: "i-2",  lat: 59.10,  lon: 30.40,  type: "incident", radiusKm: 5  },
+  { id: "i-3",  lat: 55.60,  lon: 38.50,  type: "incident", radiusKm: 7  },
+  { id: "i-4",  lat: 50.80,  lon: 39.80,  type: "incident", radiusKm: 5  },
+  { id: "i-5",  lat: 55.10,  lon: 58.00,  type: "incident", radiusKm: 5  },
+  { id: "i-6",  lat: 54.90,  lon: 80.00,  type: "incident", radiusKm: 6  },
+  { id: "i-7",  lat: 56.80,  lon: 37.30,  type: "incident", radiusKm: 5  },
+  { id: "i-8",  lat: 58.10,  lon: 30.90,  type: "incident", radiusKm: 5  },
+  { id: "i-9",  lat: 52.20,  lon: 36.00,  type: "incident", radiusKm: 5  },
+  { id: "i-10", lat: 55.20,  lon: 70.50,  type: "incident", radiusKm: 6  },
+  { id: "i-11", lat: 46.80,  lon: 40.10,  type: "incident", radiusKm: 5  },
+  { id: "i-12", lat: 55.50,  lon: 33.80,  type: "incident", radiusKm: 5  },
+  { id: "i-13", lat: 60.80,  lon: 32.10,  type: "incident", radiusKm: 5  },
+  { id: "i-14", lat: 47.80,  lon: 133.00, type: "incident", radiusKm: 6  },
+  { id: "i-15", lat: 44.50,  lon: 133.50, type: "incident", radiusKm: 5  },
+  { id: "i-16", lat: 49.50,  lon: 43.20,  type: "incident", radiusKm: 5  },
+  { id: "i-17", lat: 55.80,  lon: 67.50,  type: "incident", radiusKm: 5  },
+  { id: "i-18", lat: 60.20,  lon: 29.50,  type: "incident", radiusKm: 5  },
+  { id: "i-19", lat: 62.50,  lon: 33.20,  type: "incident", radiusKm: 5  },
+  { id: "i-20", lat: 44.00,  lon: 39.50,  type: "incident", radiusKm: 5  },
+  // News — серые
+  { id: "n-1",  lat: 56.33,  lon: 44.00,  type: "news",     radiusKm: 20 },
+  { id: "n-2",  lat: 54.19,  lon: 37.62,  type: "news",     radiusKm: 15 },
+  { id: "n-3",  lat: 57.63,  lon: 39.87,  type: "news",     radiusKm: 18 },
+  { id: "n-4",  lat: 54.62,  lon: 39.74,  type: "news",     radiusKm: 15 },
+  { id: "n-5",  lat: 52.61,  lon: 39.59,  type: "news",     radiusKm: 12 },
+  { id: "n-6",  lat: 56.86,  lon: 35.91,  type: "news",     radiusKm: 15 },
+  { id: "n-7",  lat: 56.85,  lon: 53.21,  type: "news",     radiusKm: 18 },
+  { id: "n-8",  lat: 51.77,  lon: 55.10,  type: "news",     radiusKm: 15 },
+  { id: "n-9",  lat: 53.35,  lon: 83.75,  type: "news",     radiusKm: 20 },
+  { id: "n-10", lat: 56.49,  lon: 84.97,  type: "news",     radiusKm: 18 },
+  { id: "n-11", lat: 55.35,  lon: 86.09,  type: "news",     radiusKm: 15 },
+  { id: "n-12", lat: 43.03,  lon: 44.67,  type: "news",     radiusKm: 12 },
+  { id: "n-13", lat: 42.97,  lon: 47.50,  type: "news",     radiusKm: 15 },
+  { id: "n-14", lat: 46.35,  lon: 48.04,  type: "news",     radiusKm: 20 },
+  { id: "n-15", lat: 54.32,  lon: 48.40,  type: "news",     radiusKm: 18 },
+  { id: "n-16", lat: 52.03,  lon: 113.50, type: "news",     radiusKm: 15 },
+  { id: "n-17", lat: 62.03,  lon: 129.73, type: "news",     radiusKm: 12 },
+  { id: "n-18", lat: 68.97,  lon: 33.08,  type: "news",     radiusKm: 15 },
+  { id: "n-19", lat: 48.48,  lon: 135.08, type: "news",     radiusKm: 18 },
+  { id: "n-20", lat: 43.11,  lon: 131.88, type: "news",     radiusKm: 14 },
+];
+
+// Mock news shown when real risk events haven't loaded yet
+const MOCK_RISK_EVENTS = [
+  { id: -1,  title: "Плотный туман на М-4 «Дон» (km 320–380)", severity: 0.72, source: "Росгидромет", type: "WEATHER",   active: true },
+  { id: -2,  title: "ДТП с фурой на Ленинградском шоссе, пробка 12 км",  severity: 0.85, source: "ГИБДД МО",    type: "ACCIDENT",  active: true },
+  { id: -3,  title: "Ремонт покрытия М-7 «Волга», сужение до 1 полосы",  severity: 0.55, source: "Росавтодор",  type: "ROAD_WORK", active: true },
+  { id: -4,  title: "Снегопад в Новосибирске, видимость < 200 м",        severity: 0.68, source: "МЧС РФ",      type: "WEATHER",   active: true },
+  { id: -5,  title: "Перекрытие МКАД (внешнее кольцо) — плановые работы",severity: 0.40, source: "Дептранс МСК",type: "ROAD_WORK", active: true },
+  { id: -6,  title: "Гололёд на Уральском тракте Р-351, аварийность",    severity: 0.76, source: "ГИБДД СО",    type: "WEATHER",   active: true },
+  { id: -7,  title: "Задержка паромной переправы Керчь — ветер 18 м/с",  severity: 0.60, source: "Росморречфлот",type: "WEATHER",  active: true },
+  { id: -8,  title: "Пробки Е-95 у Великого Новгорода — ремонт моста",   severity: 0.50, source: "ФДА",         type: "ROAD_WORK", active: true },
 ];
 
 function haversineKm(lat1: number, lon1: number, lat2: number, lon2: number) {
@@ -555,10 +635,10 @@ export default function DashboardPage() {
     if (hasDbGeom) return;
 
     const r = selectedDriverRoute as any;
-    const startLon = r.startLon ?? r.startPoint?.lon;
-    const startLat = r.startLat ?? r.startPoint?.lat;
-    const endLon = r.endLon ?? r.endPoint?.lon;
-    const endLat = r.endLat ?? r.endPoint?.lat;
+    const startLon = r.startPoint?.lon ?? r.startLon;
+    const startLat = r.startPoint?.lat ?? r.startLat;
+    const endLon   = r.endPoint?.lon   ?? r.endLon;
+    const endLat   = r.endPoint?.lat   ?? r.endLat;
     if (startLon == null || startLat == null || endLon == null || endLat == null) return;
 
     let cancelled = false;
@@ -878,8 +958,9 @@ export default function DashboardPage() {
                           points={points}
                           lines={lines}
                           zoneRings={zoneRings}
-                          heatmapCells={showBottlenecks ? bottleneckData : null}
-                          weatherHeatmapCells={null}
+                          eventOverlays={MOCK_EVENT_OVERLAYS}
+                          heatmapCells={showBottlenecks && bottleneckData.length > 0 ? (bottleneckData as unknown as HeatmapCell[]) : null}
+                          weatherHeatmapCells={showWeatherHeatmap && weatherHeatmap?.cells?.length ? weatherHeatmap.cells : null}
                           precipitationOverlay={showWeatherHeatmap}
                           highlightedPointIds={
                             selectedDriver ? [`driver-${selectedDriver}`] : []
@@ -1067,30 +1148,39 @@ export default function DashboardPage() {
                   );
                 })()}
 
-                {riskEvents.length > 0 && (
-                  <div className="rounded-2xl border border-sand bg-white shadow-card overflow-hidden">
-                    <div className="px-4 py-3 border-b border-sand flex items-center justify-between">
-                      <p className="text-sm font-semibold text-plum">Новости и события</p>
-                      <span className="rounded-full bg-rose-100 px-2 py-0.5 text-[10px] font-bold text-rose-600">
-                        {riskEvents.length}
-                      </span>
-                    </div>
-                    <div className="divide-y divide-sand">
-                      {riskEvents.slice(0, 8).map((ev) => (
-                        <div key={ev.id} className="flex items-start gap-3 px-4 py-3">
-                          <span className={`mt-1 h-2 w-2 shrink-0 rounded-full ${
-                            ev.severity >= 0.7 ? "bg-rose-500" :
-                            ev.severity >= 0.4 ? "bg-amber-400" : "bg-emerald-400"
-                          }`} />
-                          <div className="min-w-0">
-                            <p className="text-sm font-medium text-plum leading-snug truncate">{ev.title}</p>
-                            <p className="text-[10px] text-warmsilver mt-0.5">{ev.source} · {ev.type}</p>
+                {(() => {
+                  const displayEvents = riskEvents.length > 0 ? riskEvents : MOCK_RISK_EVENTS;
+                  const typeLabel: Record<string, string> = {
+                    WEATHER: "Погода", ACCIDENT: "ДТП", ROAD_WORK: "Дорожные работы",
+                    TRAFFIC: "Пробки", OTHER: "Прочее",
+                  };
+                  return (
+                    <div className="rounded-2xl border border-sand bg-white shadow-card overflow-hidden">
+                      <div className="px-4 py-3 border-b border-sand flex items-center justify-between">
+                        <p className="text-sm font-semibold text-plum">Новости и события</p>
+                        <span className="rounded-full bg-rose-100 px-2 py-0.5 text-[10px] font-bold text-rose-600">
+                          {displayEvents.length}
+                        </span>
+                      </div>
+                      <div className="divide-y divide-sand">
+                        {displayEvents.slice(0, 8).map((ev) => (
+                          <div key={ev.id} className="flex items-start gap-3 px-4 py-3">
+                            <span className={`mt-1 h-2 w-2 shrink-0 rounded-full ${
+                              ev.severity >= 0.7 ? "bg-rose-500" :
+                              ev.severity >= 0.4 ? "bg-amber-400" : "bg-emerald-400"
+                            }`} />
+                            <div className="min-w-0">
+                              <p className="text-sm font-medium text-plum leading-snug">{ev.title}</p>
+                              <p className="text-[10px] text-warmsilver mt-0.5">
+                                {ev.source} · {typeLabel[ev.type] ?? ev.type}
+                              </p>
+                            </div>
                           </div>
-                        </div>
-                      ))}
+                        ))}
+                      </div>
                     </div>
-                  </div>
-                )}
+                  );
+                })()}
               </div>
             </div>
 

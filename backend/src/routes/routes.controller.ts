@@ -115,6 +115,12 @@ export class RoutesController {
     return this.routes.findOne(id);
   }
 
+  @Get(':id/geometry')
+  @ApiOperation({ summary: 'OSRM геометрия маршрута как [[lon, lat], ...]' })
+  getGeometry(@Param('id', ParseIntPipe) id: number) {
+    return this.routes.getGeometry(id);
+  }
+
   @Post()
   @ApiOperation({ summary: 'Создать маршрут от склада до ПВЗ' })
   create(

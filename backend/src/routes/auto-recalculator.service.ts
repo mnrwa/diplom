@@ -2,7 +2,7 @@ import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/commo
 import { PrismaService } from '../prisma/prisma.service';
 import { RoutesService } from './routes.service';
 
-const SEVERITY_THRESHOLD = 0.7;
+const SEVERITY_THRESHOLD = 0.6;
 const CHECK_INTERVAL_MS = 2 * 60 * 1000; // 2 minutes
 const COOLDOWN_MS = 10 * 60 * 1000;      // don't recalculate same route more often than 10 min
 

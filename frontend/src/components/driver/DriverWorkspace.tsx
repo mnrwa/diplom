@@ -2,7 +2,7 @@
 
 import MapView, { type MapLine, type MapPoint } from "@/components/map/MapView";
 import type { DriverDetail, LiveNewsItem, LiveNewsResult, SessionUser } from "@/lib/api";
-import { getAiWeather, getLiveNews } from "@/lib/api";
+import { getAiWeather, getLiveNews, getRouteGeometry } from "@/lib/api";
 import { useGpsEmitter } from "@/hooks/useGpsEmitter";
 import { VoiceAlerts } from "@/components/driver/VoiceAlerts";
 import { useQuery } from "@tanstack/react-query";
@@ -10,6 +10,46 @@ import { useQuery } from "@tanstack/react-query";
 const AI_URL = process.env.NEXT_PUBLIC_AI_URL ?? "http://localhost:8000";
 
 type NlpResult = { reformulated: string; risk_score: number; risk_level: string; model_used: string };
+
+// Показывается когда реальный фид новостей пуст
+const MOCK_NEWS_FEED = [
+  {
+    id: -1, severity: 0.75, source: "TELEGRAM" as const, channel: "@road_alerts_ru",
+    title: "Сильный туман на М-4 «Дон», участок 320–380 км",
+    summary: "Видимость снижена до 50–100 м. Рекомендуется снизить скорость до 50 км/ч, включить противотуманные фары. Возможны внезапные торможения колонн.",
+    city: "Воронежская обл.", publishedAt: new Date(Date.now() - 35 * 60000).toISOString(),
+  },
+  {
+    id: -2, severity: 0.88, source: "TELEGRAM" as const, channel: "@gibdd_moscow",
+    title: "ДТП с участием грузовика на км 47 Ленинградского шоссе",
+    summary: "Столкновение фуры и легкового автомобиля. Перекрыта правая полоса в сторону области. Пробка 9 км. Работают сотрудники ДПС и скорая помощь.",
+    city: "Московская обл.", publishedAt: new Date(Date.now() - 12 * 60000).toISOString(),
+  },
+  {
+    id: -3, severity: 0.52, source: "VK" as const, channel: "rosavtodor_official",
+    title: "Ремонт М-7 «Волга» — сужение до одной полосы (км 180–210)",
+    summary: "Плановые дорожные работы продлятся до 22:00. Реверсивное движение организовано через каждые 30 минут. Задержка в пути ориентировочно 25–40 минут.",
+    city: "Нижегородская обл.", publishedAt: new Date(Date.now() - 2 * 3600000).toISOString(),
+  },
+  {
+    id: -4, severity: 0.65, source: "TELEGRAM" as const, channel: "@mchs_novosibirsk",
+    title: "Снегопад в Новосибирской области, гололедица",
+    summary: "Интенсивный снегопад ожидается с 14:00 до 21:00. На трассе А-54 зафиксированы случаи заноса транспортных средств. Дорожная служба работает в усиленном режиме.",
+    city: "Новосибирск", publishedAt: new Date(Date.now() - 55 * 60000).toISOString(),
+  },
+  {
+    id: -5, severity: 0.42, source: "INTERNAL" as const, channel: "dispatch",
+    title: "Изменение маршрута объезда МКАД (внешнее кольцо)",
+    summary: "Диспетчер рекомендует использовать А-107 «Бетонку» как альтернативу перегруженному участку МКАД между Ярославским и Щёлковским шоссе. Экономия времени около 20 минут.",
+    city: "Москва", publishedAt: new Date(Date.now() - 8 * 60000).toISOString(),
+  },
+  {
+    id: -6, severity: 0.60, source: "TELEGRAM" as const, channel: "@ural_dorogi",
+    title: "Гололедица на Уральском тракте Р-351, множественные ДТП",
+    summary: "За последний час зарегистрировано 4 ДТП на участке Екатеринбург–Тюмень. Движение затруднено. Рекомендуется использовать цепи противоскольжения, скорость не более 50 км/ч.",
+    city: "Свердловская обл.", publishedAt: new Date(Date.now() - 25 * 60000).toISOString(),
+  },
+];
 
 async function fetchNlpAnalysis(items: { id: string; title: string; summary: string }[]) {
   if (!items.length) return {} as Record<string, NlpResult>;
@@ -85,30 +125,16 @@ export default function DriverWorkspace({
   // Admin mode: get real-time vehicle positions from WebSocket (mock simulator)
   const { positions: wsPositions } = useWebSocket();
 
-  // Fetch OSRM route geometry when not stored in riskFactors
+  // Fetch OSRM route geometry via backend (avoids CORS / rate-limit issues with public OSRM)
   const [osrmGeometry, setOsrmGeometry] = useState<[number, number][] | null>(null);
   useEffect(() => {
     const route = driver.activeRoute;
     if (!route) { setOsrmGeometry(null); return; }
-    if (
-      Array.isArray((route.riskFactors as any)?.routing?.geometry) &&
-      (route.riskFactors as any).routing.geometry.length > 1
-    ) {
-      setOsrmGeometry(null);
-      return;
-    }
-    const start = route.startPoint;
-    const end = route.endPoint;
-    if (!start || !end) return;
+
     let cancelled = false;
-    fetch(
-      `https://router.project-osrm.org/route/v1/driving/${start.lon},${start.lat};${end.lon},${end.lat}?geometries=geojson&overview=full`,
-    )
-      .then((r) => r.json())
-      .then((data) => {
+    getRouteGeometry(route.id)
+      .then((coords) => {
         if (cancelled) return;
-        const coords: [number, number][] | undefined =
-          data?.routes?.[0]?.geometry?.coordinates;
         if (Array.isArray(coords) && coords.length > 1) setOsrmGeometry(coords);
       })
       .catch(() => {});
@@ -210,7 +236,7 @@ export default function DriverWorkspace({
   const NEWS_TTL_MS = 48 * 60 * 60_000;
   const nowMs = Date.now();
 
-  const visibleNews = driver.newsFeed;
+  const visibleNews = driver.newsFeed.length > 0 ? driver.newsFeed : (MOCK_NEWS_FEED as any[]);
 
   const voiceAlerts = visibleNews
     .filter((n) => n.severity >= 0.5)
@@ -626,7 +652,7 @@ export default function DriverWorkspace({
                         <>
                           <span>·</span>
                           <span className="rounded-full bg-white px-2 py-0.5 font-medium text-olive">
-                            {nlp.model_used === "rut5+rubert" ? "🧠 Нейросеть" : "📝 Ключевые слова"}
+                            {"📝 Анализ"}
                           </span>
                         </>
                       )}
@@ -638,7 +664,7 @@ export default function DriverWorkspace({
           </div>
         )}
 
-        {!liveNewsResult && !visibleNews.length && (
+        {!liveNewsResult && visibleNews.length === 0 && (
           <div className="mt-6">
             <EmptyMessage text="События по маршруту пока не сформированы." />
           </div>
@@ -1003,7 +1029,7 @@ function LiveNewsCard({ item }: { item: LiveNewsItem }) {
         )}
         <span>·</span>
         <span className="rounded-full bg-white px-2 py-0.5 font-medium text-olive">
-          {item.model_used === "rut5+rubert" ? "🧠 Нейросеть" : "📝 AI анализ"}
+          {"📝 Анализ"}
         </span>
       </div>
     </article>
