@@ -1,8 +1,6 @@
-# Зависимости
 node_modules/
 .pnpm-store/
 
-# Файлы сборки и логи
 dist/
 build/
 .next/
@@ -10,17 +8,12 @@ frontend/.next/
 .local/
 ai-service/data/*.sqlite3
 *.log
+.env
 
-.DS_Store
-
-# IDE
 .vscode/
 .idea/
 *.suo
 *.user
 
-claude.md
-
-# Временные файлы
 *.tmp
 *.temp
